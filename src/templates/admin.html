@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Admin — Webring Hub</title>
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body class="admin">
+    <header class="site-header">
+      <div class="wrap">
+        <div class="hero-card">
+          <div class="hero-body">
+            <div class="header-bar">
+              <a class="brand" href="/">
+                <img class="brand-logo" src="/logo-mark.png" width="44" height="44" alt="" />
+                <span class="brand-text">
+                  <span class="brand-title">
+                    <!--INSTANCE_WORDMARK--><span class="brand-webring">Webring</span> <span class="brand-accent">Hub</span><!--/INSTANCE_WORDMARK-->
+                  </span>
+                  <span class="brand-subtitle">Operator admin</span>
+                </span>
+              </a>
+              <div class="admin-session">
+                <span id="session-pill" class="status-pill status-pill-indigo" hidden>Signed in (this tab)</span>
+                <button id="sign-out" class="admin-button" type="button" hidden>Sign out</button>
+              </div>
+            </div>
+            <p class="tagline">
+              Review listings, block or remove sites, re-check them and change this hub's settings.
+              Every action calls the admin API with your token.
+            </p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap admin-main">
+      <section id="signin-panel" class="panel admin-signin" aria-labelledby="signin-heading">
+        <h2 id="signin-heading">Sign in</h2>
+        <p>
+          Enter the admin token from <code>config.php</code> (<code>admin_token</code>) or the
+          <code>ADMIN_TOKEN</code> environment variable.
+        </p>
+        <form id="signin-form">
+          <input type="text" name="username" value="hub-admin" autocomplete="username" hidden />
+          <label for="token">Admin token</label>
+          <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" required />
+          <button type="submit">Sign in</button>
+        </form>
+        <p id="signin-message" class="form-message" role="status" aria-live="polite"></p>
+        <p class="hint">
+          The token is kept only in this browser tab (session storage) and is sent as a Bearer
+          header. It is cleared when you sign out or close the tab, and never appears in a URL.
+        </p>
+      </section>
+
+      <div id="admin-area" class="layout admin-layout" hidden>
+        <section class="admin-listings" aria-labelledby="listings-heading">
+          <h2 id="listings-heading" class="section-title">
+            Listings <span id="list-count" class="count"></span>
+          </h2>
+
+          <form id="filter-form" class="admin-filters" role="search">
+            <div class="admin-field">
+              <label for="filter-status">Status</label>
+              <select id="filter-status" name="status">
+                <option value="">All</option>
+                <option value="active">Active</option>
+                <option value="blocked">Blocked</option>
+                <option value="stale">Stale</option>
+              </select>
+            </div>
+            <div class="admin-field admin-field-grow">
+              <label for="filter-q">Search</label>
+              <input id="filter-q" name="q" type="search" placeholder="Name, handle, site URL or DID" autocomplete="off" spellcheck="false" />
+            </div>
+            <button type="submit" class="admin-button">Apply</button>
+          </form>
+
+          <p id="list-status" class="form-message" role="status" aria-live="polite"></p>
+
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th scope="col">Site</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Last verified</th>
+                  <th scope="col">Checks</th>
+                  <th scope="col">Key</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="entries-body"></tbody>
+            </table>
+          </div>
+          <p id="list-empty" class="empty" hidden>No listings match.</p>
+
+          <nav class="admin-pager" aria-label="Pages">
+            <button id="page-prev" class="admin-button" type="button" disabled>Previous</button>
+            <span id="page-info" class="admin-page-info"></span>
+            <button id="page-next" class="admin-button" type="button" disabled>Next</button>
+          </nav>
+        </section>
+
+        <aside class="sidebar admin-sidebar">
+          <section class="panel" aria-labelledby="add-heading">
+            <h2 id="add-heading">Add a site</h2>
+            <p>Fetches the site's signed profile, verifies it and lists it (or refreshes it if it is already listed).</p>
+            <form id="add-form">
+              <label for="add-url">Site URL</label>
+              <input id="add-url" name="siteUrl" type="url" placeholder="https://someone.example" required />
+              <button type="submit">Add site</button>
+            </form>
+            <p id="add-message" class="form-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="panel" aria-labelledby="recheck-heading">
+            <h2 id="recheck-heading">Re-check due sites</h2>
+            <p>
+              Re-verifies the sites checked longest ago (never blocked ones). A site that fails 7
+              checks in a row is marked stale. The cron job does the same for every site.
+            </p>
+            <form id="recheck-form">
+              <label for="recheck-limit">How many (1–25)</label>
+              <input id="recheck-limit" name="limit" type="number" min="1" max="25" value="10" required />
+              <button type="submit">Re-check</button>
+            </form>
+            <p id="recheck-message" class="form-message" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="panel" aria-labelledby="settings-heading">
+            <h2 id="settings-heading">Instance settings</h2>
+            <p>Only fields you change are saved. Clearing the title or description restores the default from <code>config.php</code>.</p>
+            <form id="settings-form">
+              <label for="set-title">Title</label>
+              <input id="set-title" name="title" type="text" maxlength="120" />
+              <label for="set-description">Description</label>
+              <textarea id="set-description" class="admin-textarea" name="description" rows="3" maxlength="600"></textarea>
+              <label for="set-banner">Banner image URL</label>
+              <input id="set-banner" name="bannerUrl" type="text" placeholder="https://… or /banner.jpg" />
+              <label for="set-hub-url">Hub URL (enables did.json)</label>
+              <input id="set-hub-url" name="directoryUrl" type="url" placeholder="https://hub.example.com" />
+              <label class="admin-check" for="set-badge">
+                <input id="set-badge" name="maintainerBadge" type="checkbox" />
+                <span>Show the maintainer badge</span>
+              </label>
+              <label for="set-maintainer-name">Maintainer name</label>
+              <input id="set-maintainer-name" name="maintainerName" type="text" maxlength="120" />
+              <label for="set-maintainer-url">Maintainer site URL</label>
+              <input id="set-maintainer-url" name="maintainerUrl" type="url" placeholder="https://you.example" />
+              <label for="set-maintainer-did">Maintainer DID</label>
+              <input id="set-maintainer-did" name="maintainerDid" type="text" placeholder="did:web:you.example" spellcheck="false" />
+              <button type="submit">Save settings</button>
+            </form>
+            <p id="settings-message" class="form-message" role="status" aria-live="polite"></p>
+            <p class="hint">Maintainer fields are only shown publicly (and only prefilled here) while the badge is on.</p>
+          </section>
+
+          <section class="panel" aria-labelledby="ext-heading">
+            <h2 id="ext-heading">Extensions</h2>
+            <div id="ext-list" class="admin-ext-list"></div>
+            <p id="ext-message" class="form-message" role="status" aria-live="polite"></p>
+            <p class="hint">Turn extensions on with <code>HUB_EXTENSIONS</code> or <code>'extensions'</code> in <code>config.php</code>.</p>
+          </section>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="wrap footer">
+      <p>
+        Webring Hub admin. <a href="/">Back to the public page</a>.
+      </p>
+    </footer>
+
+    <script type="module" src="/admin.js"></script>
+  </body>
+</html>

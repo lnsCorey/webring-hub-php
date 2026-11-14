@@ -1,0 +1,1278 @@
+<?php
+declare(strict_types=1);
+
+namespace WebringHub;
+
+use PDO;
+
+/**
+ * PDO database layer for Webring Hub (MySQL / MariaDB for Hostinger Premium,
+ * with SQLite fallback support).
+ * Mirrors `webring-directory/src/db.js`.
+ */
+final class Database
+{
+    /**
+     * `directoryUrl` is this hub's own canonical URL. The key keeps its original name because it
+     * is also the `settings` row key and the field `POST /api/admin/settings` accepts.
+     */
+    public const DEFAULT_INSTANCE_META = [
+        'title' => 'Webring Hub',
+        'description' => 'A searchable, opt-in index of Webring Studio profiles. Every entry is verified against the Ed25519 key published by the site itself.',
+        'bannerUrl' => '',
+        'directoryUrl' => '',
+        'maintainerBadge' => false,
+        'maintainerName' => '',
+        'maintainerUrl' => '',
+        'maintainerDid' => '',
+    ];
+
+    private const META_SETTING_KEYS = [
+        'title',
+        'description',
+        'bannerUrl',
+        'directoryUrl',
+        'maintainerBadge',
+        'maintainerName',
+        'maintainerUrl',
+        'maintainerDid',
+    ];
+
+    /**
+     * Opens a PDO connection using the resolved configuration and optionally runs schema migrations.
+     *
+     * @param array<string, mixed> $config
+     */
+    public static function open(array $config): PDO
+    {
+        $dbCfg = is_array($config['db'] ?? null) ? $config['db'] : [];
+        $driver = strtolower((string) ($dbCfg['driver'] ?? $config['db_driver'] ?? 'mysql'));
+
+        $options = [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ];
+
+        if ($driver === 'sqlite') {
+            $sqlitePath = (string) ($dbCfg['sqlite_path'] ?? $config['sqlite_path'] ?? (__DIR__ . '/../data/directory.sqlite'));
+            if ($sqlitePath !== ':memory:') {
+                $dir = dirname($sqlitePath);
+                if (!is_dir($dir)) {
+                    @mkdir($dir, 0750, true);
+                }
+            }
+            $pdo = new PDO('sqlite:' . $sqlitePath, null, null, $options);
+            $pdo->exec('PRAGMA journal_mode = WAL');
+            $pdo->exec('PRAGMA synchronous = NORMAL');
+            $pdo->exec('PRAGMA busy_timeout = 5000');
+        } else {
+            $host = (string) ($dbCfg['host'] ?? $config['db_host'] ?? '127.0.0.1');
+            $port = (int) ($dbCfg['port'] ?? $config['db_port'] ?? 3306);
+            $name = (string) ($dbCfg['name'] ?? $config['db_name'] ?? '');
+            $user = (string) ($dbCfg['user'] ?? $config['db_user'] ?? '');
+            $pass = (string) ($dbCfg['pass'] ?? $config['db_pass'] ?? '');
+            $charset = (string) ($dbCfg['charset'] ?? $config['db_charset'] ?? 'utf8mb4');
+            $dsn = "mysql:host={$host};port={$port};dbname={$name};charset={$charset}";
+            try {
+                $pdo = new PDO($dsn, $user, $pass, $options);
+            } catch (\PDOException $e) {
+                $fallbackHost = $host === '127.0.0.1' ? 'localhost' : ($host === 'localhost' ? '127.0.0.1' : '');
+                if ($fallbackHost !== '') {
+                    $fallbackDsn = "mysql:host={$fallbackHost};port={$port};dbname={$name};charset={$charset}";
+                    $pdo = new PDO($fallbackDsn, $user, $pass, $options);
+                } else {
+                    throw $e;
+                }
+            }
+        }
+
+        $autoMigrate = (bool) ($dbCfg['auto_migrate'] ?? $config['auto_migrate'] ?? true);
+        if ($autoMigrate) {
+            self::migrate($pdo);
+        }
+
+        return $pdo;
+    }
+
+    /**
+     * Ensures all required tables exist.
+     */
+    public static function migrate(PDO $pdo): void
+    {
+        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS entries (
+                  rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id TEXT NOT NULL UNIQUE,
+                  site_url TEXT NOT NULL UNIQUE,
+                  did TEXT NOT NULL UNIQUE,
+                  handle TEXT NOT NULL DEFAULT '',
+                  display_name TEXT NOT NULL,
+                  tagline TEXT NOT NULL DEFAULT '',
+                  bio TEXT NOT NULL DEFAULT '',
+                  location TEXT NOT NULL DEFAULT '',
+                  avatar_url TEXT NOT NULL DEFAULT '',
+                  banner_url TEXT NOT NULL DEFAULT '',
+                  interests_json TEXT NOT NULL DEFAULT '[]',
+                  interests_text TEXT NOT NULL DEFAULT '',
+                  links_json TEXT NOT NULL DEFAULT '[]',
+                  public_key_pem TEXT NOT NULL,
+                  profile_updated_at TEXT NOT NULL,
+                  verified_at TEXT NOT NULL,
+                  last_checked_at TEXT NOT NULL,
+                  fail_count INTEGER NOT NULL DEFAULT 0,
+                  last_error TEXT,
+                  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'stale', 'blocked')),
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_entries_status ON entries(status);
+                CREATE INDEX IF NOT EXISTS idx_entries_checked ON entries(last_checked_at);
+                CREATE TABLE IF NOT EXISTS nonces (
+                  nonce TEXT PRIMARY KEY,
+                  created_at TEXT NOT NULL,
+                  used_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                  `key` TEXT PRIMARY KEY,
+                  `value` TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS rate_limits (
+                  ip_key TEXT PRIMARY KEY,
+                  window_start INTEGER NOT NULL,
+                  hits INTEGER NOT NULL DEFAULT 1
+                );
+            ");
+            return;
+        }
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS entries (
+              rowid BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+              id VARCHAR(255) NOT NULL,
+              site_url VARCHAR(500) NOT NULL,
+              did VARCHAR(255) NOT NULL,
+              handle VARCHAR(100) NOT NULL DEFAULT '',
+              display_name VARCHAR(200) NOT NULL,
+              tagline VARCHAR(400) NOT NULL DEFAULT '',
+              bio TEXT NOT NULL,
+              location VARCHAR(200) NOT NULL DEFAULT '',
+              avatar_url TEXT NOT NULL,
+              banner_url TEXT NOT NULL,
+              interests_json MEDIUMTEXT NOT NULL,
+              interests_text TEXT NOT NULL,
+              links_json MEDIUMTEXT NOT NULL,
+              public_key_pem TEXT NOT NULL,
+              profile_updated_at VARCHAR(40) NOT NULL,
+              verified_at VARCHAR(40) NOT NULL,
+              last_checked_at VARCHAR(40) NOT NULL,
+              fail_count INT NOT NULL DEFAULT 0,
+              last_error VARCHAR(500) DEFAULT NULL,
+              status ENUM('active', 'stale', 'blocked') NOT NULL DEFAULT 'active',
+              created_at VARCHAR(40) NOT NULL,
+              updated_at VARCHAR(40) NOT NULL,
+              PRIMARY KEY (rowid),
+              UNIQUE KEY uq_entries_id (id),
+              UNIQUE KEY uq_entries_site_url (site_url),
+              UNIQUE KEY uq_entries_did (did),
+              KEY idx_entries_status (status),
+              KEY idx_entries_checked (last_checked_at),
+              FULLTEXT KEY fts_entries (display_name, handle, tagline, bio, location, interests_text)
+            ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS nonces (
+              nonce VARCHAR(64) NOT NULL,
+              created_at VARCHAR(40) NOT NULL,
+              used_at VARCHAR(40) DEFAULT NULL,
+              PRIMARY KEY (nonce),
+              KEY idx_nonces_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS settings (
+              `key` VARCHAR(100) NOT NULL,
+              `value` MEDIUMTEXT NOT NULL,
+              updated_at VARCHAR(40) NOT NULL,
+              PRIMARY KEY (`key`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS rate_limits (
+              ip_key VARCHAR(128) NOT NULL,
+              window_start BIGINT NOT NULL,
+              hits INT NOT NULL DEFAULT 1,
+              PRIMARY KEY (ip_key)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+
+        // Auto-upgrade columns if an earlier schema.mysql.sql was imported manually
+        try {
+            $cols = $pdo->query("SHOW COLUMNS FROM settings LIKE 'setting_key'")->fetchAll();
+            if (count($cols) > 0) {
+                $pdo->exec("ALTER TABLE settings CHANGE COLUMN setting_key `key` VARCHAR(100) NOT NULL, CHANGE COLUMN setting_value `value` MEDIUMTEXT NOT NULL");
+            }
+            $rlCols = $pdo->query("SHOW COLUMNS FROM rate_limits LIKE 'hit_count'")->fetchAll();
+            if (count($rlCols) > 0) {
+                $pdo->exec("DROP TABLE rate_limits");
+                $pdo->exec("
+                    CREATE TABLE rate_limits (
+                      ip_key VARCHAR(128) NOT NULL,
+                      window_start BIGINT NOT NULL,
+                      hits INT NOT NULL DEFAULT 1,
+                      PRIMARY KEY (ip_key)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                ");
+            }
+        } catch (\Throwable) {
+            // Ignore if SHOW COLUMNS is restricted
+        }
+    }
+
+    private static function substrLen(string $str, int $max): string
+    {
+        return function_exists('mb_substr') ? mb_substr($str, 0, $max, 'UTF-8') : substr($str, 0, $max);
+    }
+
+    public static function cleanSingleLine(mixed $value, int $max): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+        $cleaned = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $value) ?? '';
+        $cleaned = preg_replace('/\s+/u', ' ', $cleaned) ?? '';
+        return self::substrLen(trim($cleaned), $max);
+    }
+
+    public static function cleanMultiline(mixed $value, int $max): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+        $cleaned = str_replace("\r\n", "\n", $value);
+        $cleaned = preg_replace('/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/u', ' ', $cleaned) ?? '';
+        $cleaned = preg_replace('/\n{3,}/u', "\n\n", $cleaned) ?? '';
+        return self::substrLen(trim($cleaned), $max);
+    }
+
+    public static function cleanUrl(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return '';
+        }
+        $parts = parse_url($trimmed);
+        if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return '';
+        }
+        $scheme = strtolower($parts['scheme']);
+        return ($scheme === 'https' || $scheme === 'http') ? $trimmed : '';
+    }
+
+    public static function cleanBannerUrl(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+        $trimmed = trim($value);
+        if ($trimmed === '' || strlen($trimmed) > 2048 || preg_match('/[\x00-\x1F\x7F]/', $trimmed)) {
+            return '';
+        }
+        if (str_starts_with($trimmed, '/') && !str_starts_with($trimmed, '//')) {
+            return $trimmed;
+        }
+        return self::cleanUrl($trimmed);
+    }
+
+    public static function cleanDid(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+        $trimmed = trim($value);
+        if ($trimmed === '' || strlen($trimmed) > 256) {
+            return '';
+        }
+        return preg_match('/^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$/', $trimmed) ? $trimmed : '';
+    }
+
+    public static function parseBooleanFlag(mixed $value, bool $fallback = false): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value)) {
+            return $value !== 0;
+        }
+        if (is_string($value)) {
+            $lower = strtolower(trim($value));
+            if (in_array($lower, ['1', 'true', 'yes', 'on'], true)) {
+                return true;
+            }
+            if (in_array($lower, ['0', 'false', 'no', 'off', ''], true)) {
+                return false;
+            }
+        }
+        return $fallback;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function cleanStringArray(mixed $value, int $limit, int $maxLength): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+        $out = [];
+        $seen = [];
+        foreach ($value as $item) {
+            $text = self::cleanSingleLine($item, $maxLength);
+            if ($text === '' || isset($seen[$text])) {
+                continue;
+            }
+            $seen[$text] = true;
+            $out[] = $text;
+            if (count($out) >= $limit) {
+                break;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * @return list<array{label: string, url: string}>
+     */
+    private static function cleanLinks(mixed $value, int $limit): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+        $out = [];
+        foreach ($value as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $url = self::cleanUrl($item['url'] ?? '');
+            if ($url === '') {
+                continue;
+            }
+            $host = (string) (parse_url($url, PHP_URL_HOST) ?: $url);
+            $label = self::cleanSingleLine($item['label'] ?? '', 80) ?: $host;
+            $out[] = ['label' => $label, 'url' => $url];
+            if (count($out) >= $limit) {
+                break;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * @param array<string, mixed> $site
+     * @return array<string, mixed>
+     */
+    private static function entryFields(array $site): array
+    {
+        $profile = is_array($site['profile'] ?? null) ? $site['profile'] : [];
+        $siteUrl = (string) ($site['siteUrl'] ?? '');
+        $host = (string) (parse_url($siteUrl, PHP_URL_HOST) ?: $siteUrl);
+        $interests = self::cleanStringArray($profile['interests'] ?? [], 50, 80);
+        $handle = self::cleanSingleLine($profile['handle'] ?? '', 100);
+        $displayName = self::cleanSingleLine($profile['displayName'] ?? '', 200) ?: $handle ?: $host;
+
+        return [
+            'id' => (string) $site['did'],
+            'siteUrl' => $siteUrl,
+            'did' => (string) $site['did'],
+            'handle' => $handle,
+            'displayName' => $displayName,
+            'tagline' => self::cleanSingleLine($profile['tagline'] ?? '', 400),
+            'bio' => self::cleanMultiline($profile['bio'] ?? '', 8000),
+            'location' => self::cleanSingleLine($profile['location'] ?? '', 200),
+            'avatarUrl' => self::cleanUrl($profile['avatarUrl'] ?? ''),
+            'bannerUrl' => self::cleanUrl($profile['bannerUrl'] ?? ''),
+            'interests' => $interests,
+            'interestsText' => implode(' ', $interests),
+            'links' => self::cleanLinks($profile['customLinks'] ?? [], 50),
+            'publicKeyPem' => (string) ($site['publicKeyPem'] ?? ''),
+            'profileUpdatedAt' => self::cleanSingleLine($profile['updatedAt'] ?? '', 100)
+                ?: (string) ($site['fetchedAt'] ?? self::isoNow()),
+        ];
+    }
+
+    public static function isoNow(): string
+    {
+        return gmdate('Y-m-d\TH:i:s.000\Z');
+    }
+
+    /**
+     * Inserts or refreshes the indexed copy of a verified site.
+     *
+     * The site's signing key is pinned on first listing (trust on first use, as in Webring Studio).
+     * A later, different key is accepted only through a verified rotation chain from the pinned
+     * key (`keyRotations` in did.json), or when the operator explicitly accepts it
+     * (`$acceptKeyChange`, from `POST /api/admin/entries/:did/trust-key`). Otherwise this throws
+     * `key_changed` and the listing keeps the old key, so whoever takes over a domain can't take
+     * over its listing or its signed self-removal.
+     *
+     * @param array<string, mixed> $site
+     * @return array{inserted: bool, keyRotated: bool, keyAcceptedBy: 'chain'|'operator'|null, previousKeyPem: string|null}
+     */
+    public static function upsertEntry(PDO $pdo, array $site, ?string $now = null, bool $acceptKeyChange = false): array
+    {
+        $now ??= self::isoNow();
+        $fields = self::entryFields($site);
+
+        $pdo->beginTransaction();
+        try {
+            $stmtDid = $pdo->prepare('SELECT rowid, public_key_pem FROM entries WHERE did = ?');
+            $stmtDid->execute([$fields['did']]);
+            $byDid = $stmtDid->fetch();
+
+            $keyRotated = false;
+            $keyAcceptedBy = null;
+            $previousKeyPem = null;
+            if ($byDid) {
+                $pinned = trim((string) $byDid['public_key_pem']);
+                $presented = trim($fields['publicKeyPem']);
+                if ($pinned !== '' && $pinned !== $presented) {
+                    $certificates = is_array($site['keyRotations'] ?? null) ? $site['keyRotations'] : [];
+                    $chainOk = Verify::verifyKeyRotationChain(
+                        $pinned,
+                        $presented,
+                        $fields['did'],
+                        $fields['siteUrl'],
+                        $certificates
+                    );
+                    if (!$chainOk && !$acceptKeyChange) {
+                        throw new AppError(
+                            409,
+                            'key_changed',
+                            'The site now publishes a different signing key without a rotation certificate from the '
+                            . 'key this hub pinned. The listing keeps the old key until the operator accepts the new one.'
+                        );
+                    }
+                    $keyRotated = true;
+                    $keyAcceptedBy = $chainOk ? 'chain' : 'operator';
+                    $previousKeyPem = $pinned;
+                }
+            }
+
+            $stmtSite = $pdo->prepare('SELECT rowid FROM entries WHERE site_url = ?');
+            $stmtSite->execute([$fields['siteUrl']]);
+            $bySite = $stmtSite->fetch();
+
+            if ($bySite && (!$byDid || (int) $bySite['rowid'] !== (int) $byDid['rowid'])) {
+                $del = $pdo->prepare('DELETE FROM entries WHERE rowid = ?');
+                $del->execute([$bySite['rowid']]);
+            }
+
+            $interestsJson = json_encode($fields['interests'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '[]';
+            $linksJson = json_encode($fields['links'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '[]';
+
+            if ($byDid) {
+                $upd = $pdo->prepare("
+                    UPDATE entries SET
+                      site_url = ?, handle = ?, display_name = ?, tagline = ?, bio = ?, location = ?,
+                      avatar_url = ?, banner_url = ?, interests_json = ?, interests_text = ?, links_json = ?,
+                      public_key_pem = ?, profile_updated_at = ?, verified_at = ?, last_checked_at = ?,
+                      fail_count = 0, last_error = NULL,
+                      status = CASE WHEN status = 'blocked' THEN 'blocked' ELSE 'active' END,
+                      updated_at = ?
+                    WHERE rowid = ?
+                ");
+                $upd->execute([
+                    $fields['siteUrl'],
+                    $fields['handle'],
+                    $fields['displayName'],
+                    $fields['tagline'],
+                    $fields['bio'],
+                    $fields['location'],
+                    $fields['avatarUrl'],
+                    $fields['bannerUrl'],
+                    $interestsJson,
+                    $fields['interestsText'],
+                    $linksJson,
+                    $fields['publicKeyPem'],
+                    $fields['profileUpdatedAt'],
+                    $now,
+                    $now,
+                    $now,
+                    $byDid['rowid'],
+                ]);
+                $pdo->commit();
+                return ['inserted' => false, 'keyRotated' => $keyRotated, 'keyAcceptedBy' => $keyAcceptedBy, 'previousKeyPem' => $previousKeyPem];
+            }
+
+            $ins = $pdo->prepare("
+                INSERT INTO entries (
+                  id, site_url, did, handle, display_name, tagline, bio, location, avatar_url, banner_url,
+                  interests_json, interests_text, links_json, public_key_pem, profile_updated_at,
+                  verified_at, last_checked_at, fail_count, last_error, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'active', ?, ?)
+            ");
+            $ins->execute([
+                $fields['id'],
+                $fields['siteUrl'],
+                $fields['did'],
+                $fields['handle'],
+                $fields['displayName'],
+                $fields['tagline'],
+                $fields['bio'],
+                $fields['location'],
+                $fields['avatarUrl'],
+                $fields['bannerUrl'],
+                $interestsJson,
+                $fields['interestsText'],
+                $linksJson,
+                $fields['publicKeyPem'],
+                $fields['profileUpdatedAt'],
+                $now,
+                $now,
+                $now,
+                $now,
+            ]);
+            $pdo->commit();
+            return ['inserted' => true, 'keyRotated' => false, 'keyAcceptedBy' => null, 'previousKeyPem' => null];
+        } catch (\Throwable $err) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $err;
+        }
+    }
+
+    /**
+     * Records a failed crawl and hides the entry after a week of failures.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function recordFailure(PDO $pdo, array $row, string $message, ?string $now = null): void
+    {
+        $now ??= self::isoNow();
+        $error = self::cleanSingleLine($message, 500) ?: 'Unknown error';
+        $stmt = $pdo->prepare("
+            UPDATE entries SET
+              fail_count = fail_count + 1,
+              last_checked_at = ?,
+              last_error = ?,
+              status = CASE
+                WHEN status = 'blocked' THEN 'blocked'
+                WHEN fail_count + 1 >= 7 THEN 'stale'
+                ELSE status
+              END
+            WHERE rowid = ?
+        ");
+        $stmt->execute([$now, $error, $row['rowid']]);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function extractSearchTokens(string $rawQuery): array
+    {
+        if (!preg_match_all('/[\p{L}\p{N}]+/u', strtolower($rawQuery), $matches)) {
+            return [];
+        }
+        return array_slice($matches[0], 0, 8);
+    }
+
+    /**
+     * @return array{total: int, entries: list<array<string, mixed>>}
+     */
+    private static function searchLike(PDO $pdo, string $q, int $limit, int $offset): array
+    {
+        // '!' as the escape character reads the same in MySQL and SQLite ('\\' is one character
+        // in MySQL but two in SQLite, which rejects it).
+        $escaped = preg_replace('/([!%_])/', '!$1', $q) ?? $q;
+        $like = "%{$escaped}%";
+        $where = "status = 'active' AND (
+            display_name LIKE ? ESCAPE '!'
+            OR handle LIKE ? ESCAPE '!'
+            OR tagline LIKE ? ESCAPE '!'
+            OR bio LIKE ? ESCAPE '!'
+            OR location LIKE ? ESCAPE '!'
+            OR interests_text LIKE ? ESCAPE '!'
+        )";
+        $args = [$like, $like, $like, $like, $like, $like];
+
+        $countStmt = $pdo->prepare("SELECT COUNT(*) AS n FROM entries WHERE {$where}");
+        $countStmt->execute($args);
+        $total = (int) ($countStmt->fetchColumn() ?: 0);
+
+        $sql = "SELECT * FROM entries WHERE {$where} ORDER BY LOWER(display_name) ASC LIMIT ? OFFSET ?";
+        $stmt = $pdo->prepare($sql);
+        foreach ($args as $idx => $val) {
+            $stmt->bindValue($idx + 1, $val, PDO::PARAM_STR);
+        }
+        $stmt->bindValue(7, $limit, PDO::PARAM_INT);
+        $stmt->bindValue(8, $offset, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'total' => $total,
+            'entries' => $stmt->fetchAll(),
+        ];
+    }
+
+    /**
+     * Public search over active entries; uses MySQL FULLTEXT (IN BOOLEAN MODE) when eligible,
+     * with a seamless LIKE fallback for short (<3 char) or substring queries.
+     *
+     * @param array{q?: string, limit?: int|string, offset?: int|string} $params
+     * @return array{total: int, entries: list<array<string, mixed>>}
+     */
+    public static function listEntries(PDO $pdo, array $params = []): array
+    {
+        $rawLimit = isset($params['limit']) ? (int) $params['limit'] : 24;
+        $safeLimit = min(max($rawLimit > 0 ? $rawLimit : 24, 1), 100);
+        $safeOffset = max(isset($params['offset']) ? (int) $params['offset'] : 0, 0);
+        $query = trim((string) ($params['q'] ?? ''));
+
+        if ($query === '') {
+            $total = (int) ($pdo->query("SELECT COUNT(*) FROM entries WHERE status = 'active'")->fetchColumn() ?: 0);
+            $stmt = $pdo->prepare("SELECT * FROM entries WHERE status = 'active' ORDER BY LOWER(display_name) ASC LIMIT ? OFFSET ?");
+            $stmt->bindValue(1, $safeLimit, PDO::PARAM_INT);
+            $stmt->bindValue(2, $safeOffset, PDO::PARAM_INT);
+            $stmt->execute();
+            return [
+                'total' => $total,
+                'entries' => $stmt->fetchAll(),
+            ];
+        }
+
+        $tokens = self::extractSearchTokens($query);
+        if (count($tokens) === 0) {
+            return ['total' => 0, 'entries' => []];
+        }
+
+        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $allMinThree = true;
+        foreach ($tokens as $tok) {
+            if (strlen($tok) < 3) {
+                $allMinThree = false;
+                break;
+            }
+        }
+
+        if ($driver === 'mysql' && $allMinThree) {
+            try {
+                $booleanQuery = implode(' ', array_map(static fn(string $t): string => '+' . $t . '*', $tokens));
+                $countStmt = $pdo->prepare("
+                    SELECT COUNT(*) FROM entries
+                    WHERE status = 'active'
+                      AND MATCH(display_name, handle, tagline, bio, location, interests_text) AGAINST(? IN BOOLEAN MODE)
+                ");
+                $countStmt->execute([$booleanQuery]);
+                $total = (int) ($countStmt->fetchColumn() ?: 0);
+
+                if ($total > 0) {
+                    $stmt = $pdo->prepare("
+                        SELECT *, MATCH(display_name, handle, tagline, bio, location, interests_text) AGAINST(? IN BOOLEAN MODE) AS score
+                        FROM entries
+                        WHERE status = 'active'
+                          AND MATCH(display_name, handle, tagline, bio, location, interests_text) AGAINST(? IN BOOLEAN MODE)
+                        ORDER BY score DESC, LOWER(display_name) ASC
+                        LIMIT ? OFFSET ?
+                    ");
+                    $stmt->bindValue(1, $booleanQuery, PDO::PARAM_STR);
+                    $stmt->bindValue(2, $booleanQuery, PDO::PARAM_STR);
+                    $stmt->bindValue(3, $safeLimit, PDO::PARAM_INT);
+                    $stmt->bindValue(4, $safeOffset, PDO::PARAM_INT);
+                    $stmt->execute();
+                    return [
+                        'total' => $total,
+                        'entries' => $stmt->fetchAll(),
+                    ];
+                }
+            } catch (\Throwable) {
+                // Fall back to LIKE search below
+            }
+        }
+
+        return self::searchLike($pdo, $query, $safeLimit, $safeOffset);
+    }
+
+    /**
+     * Admin listing: entries of any status, optionally filtered by status and by a simple
+     * case-insensitive substring match on display name, handle, site URL or DID.
+     *
+     * @param array{status?: string, q?: string, limit?: int|string, offset?: int|string} $params
+     * @return array{total: int, entries: list<array<string, mixed>>}
+     */
+    public static function listEntriesForAdmin(PDO $pdo, array $params = []): array
+    {
+        $rawLimit = isset($params['limit']) ? (int) $params['limit'] : 50;
+        $safeLimit = min(max($rawLimit > 0 ? $rawLimit : 50, 1), 100);
+        $safeOffset = max(isset($params['offset']) ? (int) $params['offset'] : 0, 0);
+        $status = (string) ($params['status'] ?? '');
+        $query = self::cleanSingleLine($params['q'] ?? '', 200);
+
+        $conditions = [];
+        $args = [];
+        if (in_array($status, ['active', 'blocked', 'stale'], true)) {
+            $conditions[] = 'status = ?';
+            $args[] = $status;
+        }
+        if ($query !== '') {
+            // '!' as the escape character works in both MySQL and SQLite (see searchLike).
+            $escaped = preg_replace('/([!%_])/', '!$1', strtolower($query)) ?? strtolower($query);
+            $like = "%{$escaped}%";
+            $conditions[] = "(
+                LOWER(display_name) LIKE ? ESCAPE '!'
+                OR LOWER(handle) LIKE ? ESCAPE '!'
+                OR LOWER(site_url) LIKE ? ESCAPE '!'
+                OR LOWER(did) LIKE ? ESCAPE '!'
+            )";
+            array_push($args, $like, $like, $like, $like);
+        }
+        $where = $conditions !== [] ? 'WHERE ' . implode(' AND ', $conditions) : '';
+
+        $countStmt = $pdo->prepare("SELECT COUNT(*) FROM entries {$where}");
+        $countStmt->execute($args);
+        $total = (int) ($countStmt->fetchColumn() ?: 0);
+
+        $stmt = $pdo->prepare("SELECT * FROM entries {$where} ORDER BY LOWER(display_name) ASC, rowid ASC LIMIT ? OFFSET ?");
+        $position = 1;
+        foreach ($args as $val) {
+            $stmt->bindValue($position++, $val, PDO::PARAM_STR);
+        }
+        $stmt->bindValue($position++, $safeLimit, PDO::PARAM_INT);
+        $stmt->bindValue($position, $safeOffset, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return [
+            'total' => $total,
+            'entries' => $stmt->fetchAll(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function getEntryByDid(PDO $pdo, string $did): ?array
+    {
+        $stmt = $pdo->prepare('SELECT * FROM entries WHERE did = ?');
+        $stmt->execute([$did]);
+        $row = $stmt->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function getEntryBySiteUrl(PDO $pdo, string $siteUrl): ?array
+    {
+        $stmt = $pdo->prepare('SELECT * FROM entries WHERE site_url = ?');
+        $stmt->execute([$siteUrl]);
+        $row = $stmt->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    public static function deleteEntry(PDO $pdo, string $did): bool
+    {
+        $stmt = $pdo->prepare('DELETE FROM entries WHERE did = ?');
+        $stmt->execute([$did]);
+        return $stmt->rowCount() > 0;
+    }
+
+    public static function setEntryStatus(PDO $pdo, string $did, string $status, ?string $now = null): bool
+    {
+        $now ??= self::isoNow();
+        $stmt = $pdo->prepare('UPDATE entries SET status = ?, updated_at = ? WHERE did = ?');
+        $stmt->execute([$status, $now, $did]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Rows to check on the next refresh sweep (oldest first, never blocked).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function listForRefresh(PDO $pdo, int $limit = 25): array
+    {
+        $safeLimit = min(max($limit > 0 ? $limit : 25, 1), 200);
+        $stmt = $pdo->prepare("SELECT * FROM entries WHERE status != 'blocked' ORDER BY last_checked_at ASC LIMIT ?");
+        $stmt->bindValue(1, $safeLimit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Every crawlable row, for a full cron sweep.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function listAllForRefresh(PDO $pdo): array
+    {
+        $stmt = $pdo->query("SELECT * FROM entries WHERE status != 'blocked' ORDER BY last_checked_at ASC");
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+
+    public static function createNonce(PDO $pdo, ?string $now = null): string
+    {
+        $now ??= self::isoNow();
+        $nonce = bin2hex(random_bytes(16));
+        $cutoff = gmdate('Y-m-d\TH:i:s.000\Z', time() - 3600);
+        $del = $pdo->prepare('DELETE FROM nonces WHERE created_at < ?');
+        $del->execute([$cutoff]);
+
+        $ins = $pdo->prepare('INSERT INTO nonces (nonce, created_at) VALUES (?, ?)');
+        $ins->execute([$nonce, $now]);
+        return $nonce;
+    }
+
+    /** Atomically consumes a nonce if it exists, is unused, and is < 15 minutes old. */
+    public static function consumeNonce(PDO $pdo, mixed $nonce, ?string $now = null): bool
+    {
+        if (!is_string($nonce) || $nonce === '') {
+            return false;
+        }
+        $now ??= self::isoNow();
+        $stmt = $pdo->prepare('SELECT created_at, used_at FROM nonces WHERE nonce = ?');
+        $stmt->execute([$nonce]);
+        $row = $stmt->fetch();
+        if (!is_array($row) || !empty($row['used_at'])) {
+            return false;
+        }
+        $nowTs = strtotime($now);
+        $createdTs = strtotime((string) $row['created_at']);
+        if ($nowTs === false || $createdTs === false || ($nowTs - $createdTs) > 15 * 60) {
+            return false;
+        }
+        $upd = $pdo->prepare('UPDATE nonces SET used_at = ? WHERE nonce = ? AND used_at IS NULL');
+        $upd->execute([$now, $nonce]);
+        return $upd->rowCount() === 1;
+    }
+
+    /**
+     * Checks and updates the sliding-window rate limit for a client IP key.
+     * Returns true if allowed, false if rate-limited.
+     */
+    public static function checkRateLimit(PDO $pdo, string $ipKey, int $windowSeconds, int $maxHits): bool
+    {
+        $nowSec = time();
+        $cutoff = $nowSec - $windowSeconds;
+
+        // Occasional cleanup of expired rate limit rows
+        if (random_int(1, 25) === 1) {
+            $del = $pdo->prepare('DELETE FROM rate_limits WHERE window_start < ?');
+            $del->execute([$cutoff]);
+        }
+
+        $stmt = $pdo->prepare('SELECT window_start, hits FROM rate_limits WHERE ip_key = ?');
+        $stmt->execute([$ipKey]);
+        $row = $stmt->fetch();
+
+        if (!is_array($row) || (int) $row['window_start'] <= $cutoff) {
+            self::upsertRateLimit($pdo, $ipKey, $nowSec, 1);
+            return true;
+        }
+
+        $hits = (int) $row['hits'];
+        if ($hits >= $maxHits) {
+            return false;
+        }
+
+        $upd = $pdo->prepare('UPDATE rate_limits SET hits = hits + 1 WHERE ip_key = ?');
+        $upd->execute([$ipKey]);
+        return true;
+    }
+
+    private static function upsertRateLimit(PDO $pdo, string $ipKey, int $windowStart, int $hits): void
+    {
+        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $stmt = $pdo->prepare("
+                INSERT INTO rate_limits (ip_key, window_start, hits) VALUES (?, ?, ?)
+                ON CONFLICT(ip_key) DO UPDATE SET window_start = excluded.window_start, hits = excluded.hits
+            ");
+        } else {
+            $stmt = $pdo->prepare("
+                INSERT INTO rate_limits (ip_key, window_start, hits) VALUES (?, ?, ?)
+                ON DUPLICATE KEY UPDATE window_start = VALUES(window_start), hits = VALUES(hits)
+            ");
+        }
+        $stmt->execute([$ipKey, $windowStart, $hits]);
+    }
+
+    /**
+     * @return list<mixed>
+     */
+    private static function parseJsonArray(mixed $value): array
+    {
+        if (!is_string($value) || $value === '') {
+            return [];
+        }
+        $parsed = json_decode($value, true);
+        return is_array($parsed) && array_is_list($parsed) ? $parsed : [];
+    }
+
+    /**
+     * The subset safe to expose on the public API and page.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    public static function toPublicEntry(array $row): array
+    {
+        return [
+            'id' => (string) $row['did'],
+            'siteUrl' => (string) $row['site_url'],
+            'did' => (string) $row['did'],
+            'handle' => (string) $row['handle'],
+            'displayName' => (string) $row['display_name'],
+            'tagline' => (string) $row['tagline'],
+            'bio' => (string) $row['bio'],
+            'location' => (string) $row['location'],
+            'avatarUrl' => (string) $row['avatar_url'],
+            'bannerUrl' => (string) $row['banner_url'],
+            'interests' => self::parseJsonArray($row['interests_json'] ?? '[]'),
+            'links' => self::parseJsonArray($row['links_json'] ?? '[]'),
+            'profileUpdatedAt' => (string) $row['profile_updated_at'],
+            'verifiedAt' => (string) $row['verified_at'],
+            'updatedAt' => (string) $row['updated_at'],
+        ];
+    }
+
+    /**
+     * The public shape plus operator-only bookkeeping. Nothing secret: the key is reduced to its
+     * SPKI fingerprint (the same value key-witness and Webring Studio use).
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    public static function toAdminEntry(array $row): array
+    {
+        return array_merge(self::toPublicEntry($row), [
+            'status' => (string) $row['status'],
+            'failCount' => (int) $row['fail_count'],
+            'lastError' => (string) ($row['last_error'] ?? ''),
+            'lastCheckedAt' => (string) $row['last_checked_at'],
+            'createdAt' => (string) ($row['created_at'] ?? ''),
+            'keyFingerprint' => Verify::spkiFingerprint((string) ($row['public_key_pem'] ?? '')),
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $fallback
+     * @return array{title: string, description: string, bannerUrl: string, directoryUrl: string, maintainerBadge: bool, maintainerName: string, maintainerUrl: string, maintainerDid: string}
+     */
+    public static function normalizeInstanceMeta(array $input = [], array $fallback = self::DEFAULT_INSTANCE_META): array
+    {
+        $title = self::cleanSingleLine($input['title'] ?? null, 120)
+            ?: (string) ($fallback['title'] ?? self::DEFAULT_INSTANCE_META['title']);
+        $description = self::cleanSingleLine($input['description'] ?? null, 600)
+            ?: (string) ($fallback['description'] ?? self::DEFAULT_INSTANCE_META['description']);
+        $bannerUrl = array_key_exists('bannerUrl', $input) && is_string($input['bannerUrl'])
+            ? self::cleanBannerUrl($input['bannerUrl'])
+            : (string) ($fallback['bannerUrl'] ?? '');
+        $directoryUrl = array_key_exists('directoryUrl', $input) && is_string($input['directoryUrl'])
+            ? Verify::normalizeSiteUrl($input['directoryUrl'])
+            : (string) ($fallback['directoryUrl'] ?? '');
+        $maintainerBadge = array_key_exists('maintainerBadge', $input)
+            ? self::parseBooleanFlag($input['maintainerBadge'], (bool) ($fallback['maintainerBadge'] ?? false))
+            : (bool) ($fallback['maintainerBadge'] ?? false);
+        $maintainerName = array_key_exists('maintainerName', $input) && is_string($input['maintainerName'])
+            ? self::cleanSingleLine($input['maintainerName'], 120)
+            : (string) ($fallback['maintainerName'] ?? '');
+        $maintainerUrl = array_key_exists('maintainerUrl', $input) && is_string($input['maintainerUrl'])
+            ? Verify::normalizeSiteUrl($input['maintainerUrl'])
+            : (string) ($fallback['maintainerUrl'] ?? '');
+        $maintainerDid = array_key_exists('maintainerDid', $input) && is_string($input['maintainerDid'])
+            ? self::cleanDid($input['maintainerDid'])
+            : (string) ($fallback['maintainerDid'] ?? '');
+
+        return [
+            'title' => $title,
+            'description' => $description,
+            'bannerUrl' => $bannerUrl,
+            'directoryUrl' => $directoryUrl,
+            'maintainerBadge' => $maintainerBadge,
+            'maintainerName' => $maintainerName,
+            'maintainerUrl' => $maintainerUrl,
+            'maintainerDid' => $maintainerDid,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $defaults
+     * @return array{title: string, description: string, bannerUrl: string, directoryUrl: string, maintainerBadge: bool, maintainerName: string, maintainerUrl: string, maintainerDid: string}
+     */
+    public static function getInstanceMeta(PDO $pdo, array $defaults = self::DEFAULT_INSTANCE_META): array
+    {
+        $base = self::normalizeInstanceMeta($defaults, self::DEFAULT_INSTANCE_META);
+        $placeholders = implode(', ', array_fill(0, count(self::META_SETTING_KEYS), '?'));
+        $stmt = $pdo->prepare("SELECT `key`, `value` FROM settings WHERE `key` IN ({$placeholders})");
+        $stmt->execute(self::META_SETTING_KEYS);
+        $overrides = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $overrides[(string) $row['key']] = (string) $row['value'];
+        }
+
+        return [
+            'title' => array_key_exists('title', $overrides)
+                ? (self::cleanSingleLine($overrides['title'], 120) ?: $base['title'])
+                : $base['title'],
+            'description' => array_key_exists('description', $overrides)
+                ? (self::cleanSingleLine($overrides['description'], 600) ?: $base['description'])
+                : $base['description'],
+            'bannerUrl' => array_key_exists('bannerUrl', $overrides)
+                ? self::cleanBannerUrl($overrides['bannerUrl'])
+                : $base['bannerUrl'],
+            'directoryUrl' => array_key_exists('directoryUrl', $overrides)
+                ? Verify::normalizeSiteUrl($overrides['directoryUrl'])
+                : $base['directoryUrl'],
+            'maintainerBadge' => array_key_exists('maintainerBadge', $overrides)
+                ? self::parseBooleanFlag($overrides['maintainerBadge'], false)
+                : $base['maintainerBadge'],
+            'maintainerName' => array_key_exists('maintainerName', $overrides)
+                ? self::cleanSingleLine($overrides['maintainerName'], 120)
+                : $base['maintainerName'],
+            'maintainerUrl' => array_key_exists('maintainerUrl', $overrides)
+                ? Verify::normalizeSiteUrl($overrides['maintainerUrl'])
+                : $base['maintainerUrl'],
+            'maintainerDid' => array_key_exists('maintainerDid', $overrides)
+                ? self::cleanDid($overrides['maintainerDid'])
+                : $base['maintainerDid'],
+        ];
+    }
+
+    private static function upsertSetting(PDO $pdo, string $key, string $value, string $now): void
+    {
+        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $stmt = $pdo->prepare("
+                INSERT INTO settings (`key`, `value`, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(`key`) DO UPDATE SET `value` = excluded.`value`, updated_at = excluded.updated_at
+            ");
+        } else {
+            $stmt = $pdo->prepare("
+                INSERT INTO settings (`key`, `value`, updated_at) VALUES (?, ?, ?)
+                ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = VALUES(updated_at)
+            ");
+        }
+        $stmt->execute([$key, $value, $now]);
+    }
+
+    /**
+     * @param array<string, mixed> $patch
+     */
+    public static function setInstanceMeta(PDO $pdo, array $patch = [], ?string $now = null): void
+    {
+        $now ??= self::isoNow();
+        $remove = $pdo->prepare('DELETE FROM settings WHERE `key` = ?');
+
+        $pdo->beginTransaction();
+        try {
+            foreach (self::META_SETTING_KEYS as $key) {
+                if (!array_key_exists($key, $patch)) {
+                    continue;
+                }
+                $raw = $patch[$key];
+                if ($raw === null) {
+                    $remove->execute([$key]);
+                    continue;
+                }
+                if ($key === 'title') {
+                    $cleaned = self::cleanSingleLine($raw, 120);
+                    if ($cleaned === '') {
+                        $remove->execute([$key]);
+                    } else {
+                        self::upsertSetting($pdo, $key, $cleaned, $now);
+                    }
+                } elseif ($key === 'description') {
+                    $cleaned = self::cleanSingleLine($raw, 600);
+                    if ($cleaned === '') {
+                        $remove->execute([$key]);
+                    } else {
+                        self::upsertSetting($pdo, $key, $cleaned, $now);
+                    }
+                } elseif ($key === 'bannerUrl') {
+                    $trimmed = is_string($raw) ? trim($raw) : '';
+                    self::upsertSetting($pdo, $key, $trimmed !== '' ? self::cleanBannerUrl($trimmed) : '', $now);
+                } elseif ($key === 'directoryUrl') {
+                    $trimmed = is_string($raw) ? trim($raw) : '';
+                    self::upsertSetting($pdo, $key, $trimmed !== '' ? Verify::normalizeSiteUrl($trimmed) : '', $now);
+                } elseif ($key === 'maintainerBadge') {
+                    self::upsertSetting($pdo, $key, self::parseBooleanFlag($raw, false) ? '1' : '0', $now);
+                } elseif ($key === 'maintainerName') {
+                    self::upsertSetting($pdo, $key, self::cleanSingleLine($raw, 120), $now);
+                } elseif ($key === 'maintainerUrl') {
+                    $trimmed = is_string($raw) ? trim($raw) : '';
+                    self::upsertSetting($pdo, $key, $trimmed !== '' ? Verify::normalizeSiteUrl($trimmed) : '', $now);
+                } elseif ($key === 'maintainerDid') {
+                    $trimmed = is_string($raw) ? trim($raw) : '';
+                    self::upsertSetting($pdo, $key, $trimmed !== '' ? self::cleanDid($trimmed) : '', $now);
+                }
+            }
+            $pdo->commit();
+        } catch (\Throwable $err) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $err;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $meta
+     * @return array{title: string, description: string, bannerUrl: string, did: string, maintainerBadge: bool, maintainer: array{name: string, url: string, did: string, verified: bool}|null}
+     */
+    public static function resolvePublicInfo(?PDO $pdo, array $meta = self::DEFAULT_INSTANCE_META): array
+    {
+        $safe = self::normalizeInstanceMeta($meta, self::DEFAULT_INSTANCE_META);
+        $did = $safe['directoryUrl'] !== '' ? Verify::siteUrlToDidWeb($safe['directoryUrl']) : '';
+
+        $maintainer = null;
+        if ($safe['maintainerBadge']) {
+            $url = $safe['maintainerUrl'];
+            $derivedDid = $safe['maintainerDid'] !== ''
+                ? $safe['maintainerDid']
+                : ($url !== '' ? Verify::siteUrlToDidWeb($url) : '');
+
+            $row = null;
+            if ($pdo !== null) {
+                if ($derivedDid !== '') {
+                    $row = self::getEntryByDid($pdo, $derivedDid);
+                } elseif ($url !== '') {
+                    $row = self::getEntryBySiteUrl($pdo, $url);
+                }
+            }
+
+            $verified = is_array($row) && ($row['status'] ?? '') === 'active';
+            $resolvedUrl = $url !== '' ? $url : ($verified ? (string) $row['site_url'] : '');
+            $resolvedDid = $derivedDid !== '' ? $derivedDid : ($verified ? (string) $row['did'] : '');
+            $urlHost = $resolvedUrl !== '' ? (string) (parse_url($resolvedUrl, PHP_URL_HOST) ?: '') : '';
+            $resolvedName = $safe['maintainerName'] !== ''
+                ? $safe['maintainerName']
+                : (($verified && !empty($row['display_name']))
+                    ? (string) $row['display_name']
+                    : ($urlHost !== '' ? $urlHost : $resolvedDid));
+
+            if ($resolvedName !== '' || $resolvedUrl !== '' || $resolvedDid !== '') {
+                $maintainer = [
+                    'name' => $resolvedName,
+                    'url' => $resolvedUrl,
+                    'did' => $resolvedDid,
+                    'verified' => $verified,
+                ];
+            }
+        }
+
+        return [
+            'title' => $safe['title'],
+            'description' => $safe['description'],
+            'bannerUrl' => $safe['bannerUrl'],
+            'did' => $did,
+            'maintainerBadge' => $maintainer !== null,
+            'maintainer' => $maintainer,
+        ];
+    }
+
+    /**
+     * @return array{publicKeyPem: string, privateKeyPem: string}
+     */
+    public static function getOrCreateInstanceKeys(PDO $pdo, ?string $now = null): array
+    {
+        $now ??= self::isoNow();
+        $stmt = $pdo->query("SELECT `key`, `value` FROM settings WHERE `key` IN ('instance_public_key_pem', 'instance_private_key_pem')");
+        $rows = [];
+        if ($stmt) {
+            foreach ($stmt->fetchAll() as $row) {
+                $rows[(string) $row['key']] = (string) $row['value'];
+            }
+        }
+        if (
+            isset($rows['instance_public_key_pem'], $rows['instance_private_key_pem'])
+            && str_contains($rows['instance_public_key_pem'], 'BEGIN PUBLIC KEY')
+        ) {
+            return [
+                'publicKeyPem' => $rows['instance_public_key_pem'],
+                'privateKeyPem' => $rows['instance_private_key_pem'],
+            ];
+        }
+
+        $keys = Verify::generateKeyPair();
+        $pdo->beginTransaction();
+        try {
+            self::upsertSetting($pdo, 'instance_public_key_pem', $keys['publicKeyPem'], $now);
+            self::upsertSetting($pdo, 'instance_private_key_pem', $keys['privateKeyPem'], $now);
+            $pdo->commit();
+        } catch (\Throwable $err) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $err;
+        }
+        return $keys;
+    }
+
+    /**
+     * Builds the W3C `did:web` document for this hub instance, linking `controller`
+     * to the creator / maintainer's DID when configured.
+     *
+     * @param array<string, mixed> $meta
+     * @return array<string, mixed>|null
+     */
+    public static function buildInstanceDidDocument(PDO $pdo, array $meta = self::DEFAULT_INSTANCE_META): ?array
+    {
+        $info = self::resolvePublicInfo($pdo, $meta);
+        if ($info['did'] === '') {
+            return null;
+        }
+        $safe = self::normalizeInstanceMeta($meta, self::DEFAULT_INSTANCE_META);
+        $keys = self::getOrCreateInstanceKeys($pdo);
+        $controllerDid = ($info['maintainer'] !== null && $info['maintainer']['did'] !== '')
+            ? $info['maintainer']['did']
+            : '';
+
+        $doc = [
+            '@context' => [
+                'https://www.w3.org/ns/did/v1',
+                'https://w3id.org/security/suites/ed25519-2020/v1',
+            ],
+            'id' => $info['did'],
+        ];
+        if ($controllerDid !== '') {
+            $doc['controller'] = $controllerDid;
+        }
+        $doc['verificationMethod'] = [
+            [
+                'id' => $info['did'] . '#key-1',
+                'type' => 'Ed25519VerificationKey2020',
+                'controller' => $controllerDid !== '' ? $controllerDid : $info['did'],
+                'publicKeyPem' => $keys['publicKeyPem'],
+            ],
+        ];
+        // The service id and type keep their original "directory" names: clients and published
+        // did.json documents already rely on them.
+        $services = [
+            [
+                'id' => $info['did'] . '#directory',
+                'type' => 'WebringDirectory',
+                'serviceEndpoint' => $safe['directoryUrl'] . '/api/entries',
+            ],
+        ];
+        if ($info['maintainer'] !== null && $info['maintainer']['url'] !== '') {
+            $services[] = [
+                'id' => $info['did'] . '#maintainer',
+                'type' => 'WebringMaintainer',
+                'serviceEndpoint' => $info['maintainer']['url'],
+            ];
+        }
+        $doc['service'] = $services;
+
+        return $doc;
+    }
+}

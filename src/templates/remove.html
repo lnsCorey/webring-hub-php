@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remove a site — Webring Hub</title>
+    <meta
+      name="description"
+      content="Remove your own site from this Webring Hub with a signed request. The private key never leaves your machine."
+    />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <div class="hero-card">
+          <div class="hero-body">
+            <div class="header-bar">
+              <a class="brand" href="/">
+                <img class="brand-logo" src="/logo-mark.png" width="44" height="44" alt="" />
+                <span class="brand-text">
+                  <span class="brand-title">
+                    <!--INSTANCE_WORDMARK--><span class="brand-webring">Webring</span> <span class="brand-accent">Hub</span><!--/INSTANCE_WORDMARK-->
+                  </span>
+                  <span class="brand-subtitle">Ed25519 Signed DID • Federated Profile Index</span>
+                </span>
+              </a>
+              <div class="header-badges" aria-hidden="true">
+                <span class="status-pill status-pill-emerald">Signed DID Verified</span>
+                <span class="status-pill status-pill-indigo">did:web • Static JSON</span>
+              </div>
+            </div>
+            <p class="tagline">
+              Remove your own site from the index. The hub only accepts a removal signed with
+              the Ed25519 key your site already publishes.
+            </p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap page">
+      <section id="confirm-panel" class="panel" hidden>
+        <h2>Confirm removal</h2>
+        <p>
+          This signed request will remove <strong id="confirm-name">this site</strong> from the
+          hub.
+        </p>
+        <dl class="facts">
+          <div>
+            <dt>Site</dt>
+            <dd id="confirm-site"></dd>
+          </div>
+          <div>
+            <dt>Identity</dt>
+            <dd id="confirm-did"></dd>
+          </div>
+          <div>
+            <dt>Signed</dt>
+            <dd id="confirm-created"></dd>
+          </div>
+        </dl>
+        <form id="confirm-form">
+          <button type="submit" class="button-danger">Remove this entry</button>
+        </form>
+        <p id="confirm-message" class="form-message" role="status" aria-live="polite"></p>
+        <p><a href="/">Cancel and go back</a></p>
+      </section>
+
+      <section id="start-panel" class="panel">
+        <h2>Remove your site</h2>
+        <p>
+          Enter the site URL you listed. The hub issues a single-use nonce, then shows the
+          command to run on the machine that holds your key.
+        </p>
+        <form id="start-form">
+          <label for="site-url">Your site URL</label>
+          <input
+            id="site-url"
+            name="siteUrl"
+            type="url"
+            placeholder="https://yourname.example"
+            required
+          />
+          <button type="submit">Get a nonce</button>
+        </form>
+        <p id="start-message" class="form-message" role="status" aria-live="polite"></p>
+        <div id="instructions" hidden>
+          <p>Run this from a checkout of <code>webring-hub-php</code>, using the key for your site:</p>
+          <pre><code id="command"></code></pre>
+          <p class="hint">
+            The helper prints a link back to this page with the signed request attached. Open it,
+            check the site it names, and confirm. Nothing is removed until you do, and the link
+            expires with the nonce.
+          </p>
+        </div>
+      </section>
+
+      <section id="paste-panel" class="panel">
+        <h2>Have a signed request?</h2>
+        <p>
+          Paste the JSON printed by <code>scripts/sign-request.js</code>, or open the link it
+          produced. This is the same request Webring Studio will send for you later.
+        </p>
+        <form id="paste-form">
+          <label for="request-json">Signed request JSON</label>
+          <textarea
+            id="request-json"
+            name="request"
+            rows="8"
+            spellcheck="false"
+            placeholder='{ "siteUrl": "https://yourname.example", "did": "did:web:yourname.example", … }'
+          ></textarea>
+          <button type="submit">Review removal</button>
+        </form>
+        <p id="paste-message" class="form-message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel">
+        <h2>How removal works</h2>
+        <ul>
+          <li>The hub hands out a nonce that expires after 15 minutes and works once.</li>
+          <li>You sign <code>{action, siteUrl, did, nonce, createdAt}</code> with your Ed25519 key.</li>
+          <li>The hub verifies that signature against your published key before deleting.</li>
+          <li>Your private key never leaves your machine.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="wrap footer">
+      <p>
+        Part of the Webring Studio ecosystem.
+        <a href="https://github.com/bitphr3ak/webring-studio" rel="noopener noreferrer" target="_blank"
+          >Webring Studio on GitHub</a
+        >.
+      </p>
+    </footer>
+
+    <script type="module" src="/remove.js"></script>
+  </body>
+</html>

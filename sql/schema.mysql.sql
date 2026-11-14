@@ -1,0 +1,57 @@
+-- Webring Hub — MySQL / MariaDB Schema (Hostinger Premium compatible)
+-- Character set: utf8mb4 (supports emoji in bios, display names, and tags)
+
+CREATE TABLE IF NOT EXISTS entries (
+  rowid BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id VARCHAR(255) NOT NULL,
+  site_url VARCHAR(500) NOT NULL,
+  did VARCHAR(255) NOT NULL,
+  handle VARCHAR(100) NOT NULL DEFAULT '',
+  display_name VARCHAR(200) NOT NULL,
+  tagline VARCHAR(400) NOT NULL DEFAULT '',
+  bio TEXT NOT NULL,
+  location VARCHAR(200) NOT NULL DEFAULT '',
+  avatar_url TEXT NOT NULL,
+  banner_url TEXT NOT NULL,
+  interests_json MEDIUMTEXT NOT NULL,
+  interests_text TEXT NOT NULL,
+  links_json MEDIUMTEXT NOT NULL,
+  public_key_pem TEXT NOT NULL,
+  profile_updated_at VARCHAR(40) NOT NULL,
+  verified_at VARCHAR(40) NOT NULL,
+  last_checked_at VARCHAR(40) NOT NULL,
+  fail_count INT NOT NULL DEFAULT 0,
+  last_error VARCHAR(500) DEFAULT NULL,
+  status ENUM('active', 'stale', 'blocked') NOT NULL DEFAULT 'active',
+  created_at VARCHAR(40) NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (rowid),
+  UNIQUE KEY uq_entries_id (id),
+  UNIQUE KEY uq_entries_site_url (site_url),
+  UNIQUE KEY uq_entries_did (did),
+  KEY idx_entries_status (status),
+  KEY idx_entries_checked (last_checked_at),
+  FULLTEXT KEY fts_entries (display_name, handle, tagline, bio, location, interests_text)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nonces (
+  nonce VARCHAR(64) NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  used_at VARCHAR(40) DEFAULT NULL,
+  PRIMARY KEY (nonce),
+  KEY idx_nonces_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS settings (
+  `key` VARCHAR(100) NOT NULL,
+  `value` MEDIUMTEXT NOT NULL,
+  updated_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  ip_key VARCHAR(128) NOT NULL,
+  window_start BIGINT NOT NULL,
+  hits INT NOT NULL DEFAULT 1,
+  PRIMARY KEY (ip_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
