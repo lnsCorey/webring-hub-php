@@ -76,8 +76,12 @@ These still say "directory", so existing sites, clients and data keep working. D
        // Generate a random token (e.g. `openssl rand -hex 32`) to enable /admin and /api/admin/*
        'admin_token' => 'YOUR_SECRET_ADMIN_TOKEN',
 
-       // Hostinger runs behind a reverse proxy / CDN
+       // Reverse proxy / rate limiting (`trust_proxy` defaults to false in config.example.php;
+       // set to true only behind a trusted reverse proxy / CDN such as Hostinger)
        'trust_proxy' => true,
+       'trusted_proxy_hops' => 1, // Number of proxy hops from the right in X-Forwarded-For
+       'global_crawl_rate_limit_window_seconds' => 60,
+       'global_crawl_rate_limit_max' => 20,
 
        'instance' => [
            'title' => 'Indie Webring Hub',
@@ -149,7 +153,16 @@ To keep listed profiles fresh and automatically mark unreachable sites as `stale
 | Maintainer name / URL / DID | `HUB_MAINTAINER_NAME`, `HUB_MAINTAINER_URL`, `HUB_MAINTAINER_DID` (`DIRECTORY_MAINTAINER_*`) | `maintainer_name`, `maintainer_url`, `maintainer_did` |
 | Enabled extensions (comma-separated) | `HUB_EXTENSIONS` (`DIRECTORY_EXTENSIONS`) | `extensions` |
 | Admin token | `ADMIN_TOKEN` | `admin_token` |
+| Reverse proxy trust (`false` by default) | `TRUST_PROXY` | `trust_proxy` |
+| Trusted proxy hops from right (default `1`) | `TRUSTED_PROXY_HOPS` | `trusted_proxy_hops` |
+| Rate limiting enabled (`1` by default) | `RATE_LIMIT` | `rate_limit_enabled` |
+| Global crawl cap per minute (default `20`) | `GLOBAL_CRAWL_RATE_LIMIT_MAX` | `global_crawl_rate_limit_max` (or `'global_crawl_rate_limit' => ['window_seconds' => 60, 'max' => 20]`) |
 | Database | `DB_DRIVER`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`, `DATABASE_PATH` (SQLite) | `db_*` or `'db' => [...]` |
+
+**Rate limiting & outbound verification:**
+
+- When `trust_proxy` is enabled, `X-Forwarded-For` is read `trusted_proxy_hops` from the right, validated as an IP address, and falls back to `REMOTE_ADDR` if missing or invalid. `POST /api/entries` and `POST /api/entries/{did}/refresh` also enforce a global crawl cap (`global_crawl_rate_limit`).
+- Outbound site verification converts IDN hostnames to ASCII, rejects percent-encoded or non-ASCII hosts, restricts ports to `443` (or `80` only when `allow_insecure` is enabled), verifies the connected IP (`CURLINFO_PRIMARY_IP`) matches the pinned DNS IP, and returns generic fetch error messages.
 
 The instance keys can also be nested under `'instance' => [...]` in camelCase, as in the example above. Settings saved on `/admin` (or with `POST /api/admin/settings`) are stored in the `settings` table and override `config.php`.
 
