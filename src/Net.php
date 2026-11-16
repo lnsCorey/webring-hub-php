@@ -12,6 +12,47 @@ final class Net
     public const DEFAULT_USER_AGENT = 'WebringHub-PHP/0.1 (+https://github.com/bitphr3ak/webring-studio)';
 
     /**
+     * Resolves the client IP address for rate limiting.
+     * When $trustProxy is true, reads the address $trustedProxyHops from the right in
+     * X-Forwarded-For, validates it as an IP, and falls back to REMOTE_ADDR.
+     *
+     * @param array<string, mixed> $server
+     */
+    public static function resolveClientIp(array $server, bool $trustProxy, int $trustedProxyHops = 1): string
+    {
+        $remote = (string) ($server['REMOTE_ADDR'] ?? 'unknown');
+        $remote = str_starts_with($remote, '::ffff:') ? substr($remote, 7) : $remote;
+
+        if (!$trustProxy || $trustedProxyHops < 1) {
+            return $remote;
+        }
+
+        $forwarded = $server['HTTP_X_FORWARDED_FOR'] ?? '';
+        if (!is_string($forwarded) || trim($forwarded) === '') {
+            return $remote;
+        }
+
+        $parts = array_values(array_filter(
+            array_map('trim', explode(',', $forwarded)),
+            static fn (string $v): bool => $v !== ''
+        ));
+        $index = count($parts) - $trustedProxyHops;
+        if ($index < 0) {
+            return $remote;
+        }
+
+        $candidate = $parts[$index];
+        if (str_starts_with($candidate, '::ffff:')) {
+            $candidate = substr($candidate, 7);
+        }
+        if (filter_var($candidate, FILTER_VALIDATE_IP) === false) {
+            return $remote;
+        }
+
+        return $candidate;
+    }
+
+    /**
      * True only for globally routable unicast IPv4 / IPv6 addresses.
      * Mirrors `isPublicAddress` in `webring-directory/src/net.js`.
      */
@@ -185,7 +226,7 @@ final class Net
         if (!$allowPrivate) {
             foreach ($ips as $ip) {
                 if (!self::isPublicAddress($ip)) {
-                    throw new AppError(400, 'unsafe_host', "Refusing to connect to non-public address {$ip}.");
+                    throw new AppError(400, 'unsafe_host', 'Refusing to connect to a private or reserved address.');
                 }
             }
         }
@@ -217,6 +258,48 @@ final class Net
         $basePath = $base['path'] ?? '/';
         $dir = preg_replace('#/[^/]*$#', '/', $basePath) ?: '/';
         return "{$scheme}://{$host}{$port}{$dir}{$location}";
+    }
+
+    /**
+     * Validates and normalizes a URL host to plain ASCII (converting IDN via UTS-46)
+     * or a bracketed IPv6 literal, rejecting percent-encoding and malformed characters.
+     */
+    private static function normalizeAndValidateHost(string $rawHost): string
+    {
+        if ($rawHost === '' || str_contains($rawHost, '%') || preg_match('/[\s\x00-\x1F\x7F]/', $rawHost)) {
+            throw new AppError(400, 'invalid_url', 'The URL hostname is not valid.');
+        }
+
+        if (str_starts_with($rawHost, '[') && str_ends_with($rawHost, ']')) {
+            $inner = substr($rawHost, 1, -1);
+            if (filter_var($inner, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false) {
+                throw new AppError(400, 'invalid_url', 'The URL IPv6 host is not valid.');
+            }
+            return '[' . strtolower($inner) . ']';
+        }
+
+        if (filter_var($rawHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            return $rawHost;
+        }
+
+        $asciiHost = $rawHost;
+        if (preg_match('/[^\x20-\x7E]/', $rawHost)) {
+            if (!function_exists('idn_to_ascii')) {
+                throw new AppError(400, 'invalid_url', 'Internationalized domain names are not supported.');
+            }
+            $converted = idn_to_ascii($rawHost, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
+            if (!is_string($converted) || $converted === '') {
+                throw new AppError(400, 'invalid_url', 'The URL hostname is not valid.');
+            }
+            $asciiHost = $converted;
+        }
+
+        $asciiHost = strtolower($asciiHost);
+        if (!preg_match('/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/', $asciiHost)) {
+            throw new AppError(400, 'invalid_url', 'The URL hostname is not valid.');
+        }
+
+        return $asciiHost;
     }
 
     /**
@@ -253,21 +336,37 @@ final class Net
                 throw new AppError(400, 'unsafe_url', 'URLs with credentials are not allowed.');
             }
 
-            $host = $parts['host'];
+            $host = self::normalizeAndValidateHost((string) $parts['host']);
             $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
+            if ($port !== 443 && !($allowInsecure && $scheme === 'http' && $port === 80)) {
+                throw new AppError(400, 'unsafe_port', 'Only standard HTTPS port 443 is allowed.');
+            }
+
+            $path = (string) ($parts['path'] ?? '/');
+            if ($path === '') {
+                $path = '/';
+            } elseif (!str_starts_with($path, '/')) {
+                $path = '/' . $path;
+            }
+            $query = isset($parts['query']) && $parts['query'] !== '' ? '?' . $parts['query'] : '';
+            $portPart = (($scheme === 'https' && $port !== 443) || ($scheme === 'http' && $port !== 80))
+                ? ':' . $port
+                : '';
+            $rebuiltUrl = "{$scheme}://{$host}{$portPart}{$path}{$query}";
+
             $pinnedIp = self::resolveAndValidateHost($host, $allowPrivate);
 
-            $result = self::requestOnce($currentUrl, $host, $port, $pinnedIp, $timeoutMs, $maxBytes, $userAgent);
+            $result = self::requestOnce($rebuiltUrl, $host, $port, $pinnedIp, $timeoutMs, $maxBytes, $userAgent);
             if (isset($result['redirect'])) {
                 if ($hop === $maxRedirects) {
                     throw new AppError(502, 'too_many_redirects', 'The remote site redirected too many times.');
                 }
-                $currentUrl = self::resolveRedirectUrl($currentUrl, $result['redirect']);
+                $currentUrl = self::resolveRedirectUrl($rebuiltUrl, $result['redirect']);
                 continue;
             }
 
             return [
-                'url' => $currentUrl,
+                'url' => $rebuiltUrl,
                 'status' => $result['status'],
                 'headers' => $result['headers'],
                 'json' => $result['json'],
@@ -334,16 +433,24 @@ final class Net
         $errno = curl_errno($ch);
         $errorMsg = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $primaryIp = (string) curl_getinfo($ch, CURLINFO_PRIMARY_IP);
         curl_close($ch);
 
         if ($abortedForSize) {
             throw new AppError(502, 'response_too_large', 'The remote document is too large.');
         }
         if ($ok === false) {
+            error_log("[webring-hub-php] fetch_failed for {$url}: ({$errno}) {$errorMsg}");
             if ($errno === CURLE_OPERATION_TIMEDOUT) {
                 throw new AppError(504, 'fetch_timeout', 'The remote site took too long to respond.');
             }
-            throw new AppError(502, 'fetch_failed', "Could not fetch the remote site: {$errorMsg}");
+            throw new AppError(502, 'fetch_failed', 'Could not fetch the remote site.');
+        }
+        $pinnedPacked = inet_pton($pinnedIp);
+        $primaryPacked = $primaryIp !== '' ? inet_pton($primaryIp) : false;
+        if ($pinnedPacked === false || $primaryPacked === false || $primaryPacked !== $pinnedPacked) {
+            error_log("[webring-hub-php] ip_pin_mismatch for {$url}: expected {$pinnedIp}, got {$primaryIp}");
+            throw new AppError(502, 'fetch_failed', 'The remote connection did not match the validated address.');
         }
 
         if ($status >= 300 && $status < 400) {

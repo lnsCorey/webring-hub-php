@@ -863,10 +863,11 @@ final class Database
         $nowSec = time();
         $cutoff = $nowSec - $windowSeconds;
 
-        // Occasional cleanup of expired rate limit rows
+        // Occasional cleanup of expired rate limit rows (use at least 3600s so shorter windows don't purge hourly keys)
         if (random_int(1, 25) === 1) {
+            $cleanupCutoff = $nowSec - max($windowSeconds, 3600);
             $del = $pdo->prepare('DELETE FROM rate_limits WHERE window_start < ?');
-            $del->execute([$cutoff]);
+            $del->execute([$cleanupCutoff]);
         }
 
         $stmt = $pdo->prepare('SELECT window_start, hits FROM rate_limits WHERE ip_key = ?');

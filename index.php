@@ -113,17 +113,9 @@ function readJsonBody(int $maxBytes = MAX_BODY_BYTES): array
     return $decoded;
 }
 
-function clientIp(bool $trustProxy): string
+function clientIp(bool $trustProxy, int $trustedProxyHops = 1): string
 {
-    if ($trustProxy) {
-        $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
-        if (is_string($forwarded) && trim($forwarded) !== '') {
-            $parts = explode(',', $forwarded);
-            return trim($parts[0]);
-        }
-    }
-    $addr = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
-    return str_starts_with($addr, '::ffff:') ? substr($addr, 7) : $addr;
+    return Net::resolveClientIp($_SERVER, $trustProxy, $trustedProxyHops);
 }
 
 function getAuthorizationHeader(): string
@@ -288,20 +280,32 @@ try {
     $allowInsecure = !empty($config['allow_insecure']);
     $allowPrivate = !empty($config['allow_private_hosts']);
     $trustProxy = !empty($config['trust_proxy']);
+    $trustedProxyHops = max(1, (int) ($config['trusted_proxy_hops'] ?? 1));
     $rateLimitEnabled = $config['rate_limit_enabled'] ?? true;
     $writeRateWindow = (int) ($config['write_rate_limit']['window_seconds'] ?? 3600);
     $writeRateMax = (int) ($config['write_rate_limit']['max'] ?? 30);
+    $globalCrawlWindow = max(1, (int) ($config['global_crawl_rate_limit']['window_seconds'] ?? 60));
+    $globalCrawlMax = max(1, (int) ($config['global_crawl_rate_limit']['max'] ?? 20));
     $refreshTimeoutMs = (int) ($config['refresh_timeout_ms'] ?? 8000);
     $adminToken = (string) ($config['admin_token'] ?? '');
     $extensions = Extensions::load($config, $pdo);
 
-    $enforceWriteLimit = static function () use ($pdo, $rateLimitEnabled, $trustProxy, $writeRateWindow, $writeRateMax): void {
+    $enforceWriteLimit = static function () use ($pdo, $rateLimitEnabled, $trustProxy, $trustedProxyHops, $writeRateWindow, $writeRateMax): void {
         if (!$rateLimitEnabled) {
             return;
         }
-        $ip = clientIp($trustProxy);
+        $ip = clientIp($trustProxy, $trustedProxyHops);
         if (!Database::checkRateLimit($pdo, 'write:' . $ip, $writeRateWindow, $writeRateMax)) {
             throw new AppError(429, 'rate_limited', 'Too many requests. Try again later.');
+        }
+    };
+
+    $enforceGlobalCrawlLimit = static function () use ($pdo, $rateLimitEnabled, $globalCrawlWindow, $globalCrawlMax): void {
+        if (!$rateLimitEnabled) {
+            return;
+        }
+        if (!Database::checkRateLimit($pdo, 'global:crawl', $globalCrawlWindow, $globalCrawlMax)) {
+            throw new AppError(429, 'rate_limited', 'Hub is busy verifying sites. Try again shortly.');
         }
     };
 
@@ -442,6 +446,7 @@ try {
     if ($method === 'POST') {
         if ($pathname === '/api/entries') {
             $enforceWriteLimit();
+            $enforceGlobalCrawlLimit();
             $body = readJsonBody();
             if (!isset($body['siteUrl']) || !is_string($body['siteUrl'])) {
                 throw new AppError(400, 'invalid_request', 'Send JSON like {"siteUrl":"https://example.com"}.');
@@ -466,6 +471,7 @@ try {
 
         if (preg_match('#^/api/entries/([^/]+)/refresh$#', $pathname, $matches)) {
             $enforceWriteLimit();
+            $enforceGlobalCrawlLimit();
             $did = decodeParam($matches[1]);
             $row = Database::getEntryByDid($pdo, $did);
             if ($row === null || ($row['status'] ?? '') === 'blocked') {

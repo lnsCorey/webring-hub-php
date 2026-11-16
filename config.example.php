@@ -35,10 +35,13 @@ return [
     'admin_token' => getenv('ADMIN_TOKEN') ?: '',
 
     // Reverse proxy / rate limiting
-    'trust_proxy' => (getenv('TRUST_PROXY') ?: '1') === '1',
+    'trust_proxy' => (getenv('TRUST_PROXY') ?: '0') === '1',
+    'trusted_proxy_hops' => max(1, (int) (getenv('TRUSTED_PROXY_HOPS') ?: 1)),
     'rate_limit_enabled' => (getenv('RATE_LIMIT') ?: '1') !== '0',
     'write_rate_limit_window_seconds' => 3600,
     'write_rate_limit_max' => 30,
+    'global_crawl_rate_limit_window_seconds' => 60,
+    'global_crawl_rate_limit_max' => (int) (getenv('GLOBAL_CRAWL_RATE_LIMIT_MAX') ?: 20),
 
     // Remote site verification guards (keep false in production!)
     'allow_insecure' => (getenv('ALLOW_INSECURE') ?: '0') === '1',
