@@ -196,12 +196,12 @@ final class Site
                 }
             }
         }
-        if (!str_contains($publicKeyPem, 'BEGIN PUBLIC KEY')) {
-            throw self::fail('missing_public_key', 'The site did not publish a PEM Ed25519 public key.');
+        if (!str_contains($publicKeyPem, 'BEGIN PUBLIC KEY') || Verify::spkiFingerprint($publicKeyPem) === '') {
+            throw self::fail('missing_public_key', 'The site did not publish a valid PEM Ed25519 public key.');
         }
 
-        if (!empty($manifest['proof']) && !Verify::verifyDocumentSignature($manifestRes['jsonObject'], $publicKeyPem)) {
-            throw self::fail('manifest_signature_invalid', 'The manifest signature did not verify.');
+        if (empty($manifest['proof']) || !Verify::verifyDocumentSignature($manifestRes['jsonObject'], $publicKeyPem)) {
+            throw self::fail('manifest_signature_invalid', 'The manifest signature is missing or did not verify.');
         }
 
         $profileUrl = self::resolveEndpoint($siteUrl, $endpoints['profile'] ?? null, '/api/profile.json');

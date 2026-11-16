@@ -138,16 +138,20 @@ function getAuthorizationHeader(): string
     return '';
 }
 
-function requireAdmin(string $adminToken): void
+function requireAdmin(string $adminToken, ?PDO $pdo = null, bool $trustProxy = false, int $trustedProxyHops = 1): void
 {
-    if ($adminToken === '') {
+    if (strlen($adminToken) < 32) {
         throw new AppError(503, 'admin_disabled', 'Admin access is not configured.');
     }
-    $header = getAuthorizationHeader();
-    if (!preg_match('/^Bearer\s+(.+)$/', $header, $matches)) {
-        throw new AppError(401, 'unauthorized', 'A valid admin token is required.');
+    $ip = clientIp($trustProxy, $trustedProxyHops);
+    if ($pdo !== null && !Database::checkRateLimit($pdo, 'admin_auth:' . $ip, 900, 60)) {
+        throw new AppError(429, 'rate_limited', 'Too many admin requests. Try again later.');
     }
-    if (!hash_equals($adminToken, $matches[1])) {
+    $header = getAuthorizationHeader();
+    if (!preg_match('/^Bearer\s+(.+)$/', $header, $matches) || !hash_equals($adminToken, $matches[1])) {
+        if ($pdo !== null && !Database::checkRateLimit($pdo, 'admin_auth_fail:' . $ip, 900, 10)) {
+            throw new AppError(429, 'rate_limited', 'Too many failed admin login attempts. Try again later.');
+        }
         throw new AppError(401, 'unauthorized', 'A valid admin token is required.');
     }
 }
@@ -321,7 +325,7 @@ try {
             return;
         }
         if ($match['route']['admin']) {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
         }
         if ($match['route']['rateLimited']) {
             $enforceWriteLimit();
@@ -420,13 +424,13 @@ try {
         }
 
         if ($pathname === '/api/admin/extensions') {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             sendJson(200, ['extensions' => $extensions->adminList()], [], $headOnly);
         }
 
         // Every entry whatever its status, with the operator-only fields from toAdminEntry.
         if ($pathname === '/api/admin/entries') {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             $status = is_string($_GET['status'] ?? null) ? $_GET['status'] : '';
             if ($status !== '' && !in_array($status, ['active', 'blocked', 'stale'], true)) {
                 throw new AppError(400, 'invalid_status', 'status must be active, blocked or stale.');
@@ -449,6 +453,12 @@ try {
     }
 
     if ($method === 'POST') {
+        $rawContentType = (string) ($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '');
+        $mediaType = strtolower(trim(explode(';', $rawContentType, 2)[0]));
+        if ($mediaType !== 'application/json') {
+            throw new AppError(415, 'unsupported_media_type', 'Content-Type must be application/json.');
+        }
+
         if ($pathname === '/api/entries') {
             $enforceWriteLimit();
             $enforceGlobalCrawlLimit();
@@ -458,6 +468,10 @@ try {
             }
             $normalizedInputUrl = Verify::normalizeSiteUrl($body['siteUrl']);
             $existingBySite = $normalizedInputUrl !== '' ? Database::getEntryBySiteUrl($pdo, $normalizedInputUrl) : null;
+            $existingByDid = $normalizedInputUrl !== '' ? Database::getEntryByDid($pdo, Verify::siteUrlToDidWeb($normalizedInputUrl)) : null;
+            if (($existingBySite['status'] ?? '') === 'blocked' || ($existingByDid['status'] ?? '') === 'blocked') {
+                throw new AppError(403, 'entry_blocked', 'This site is blocked in this hub. Contact the operator.');
+            }
             if ($existingBySite === null && $normalizedInputUrl !== '') {
                 $domainCount = Database::countEntriesByRegistrableDomain($pdo, $normalizedInputUrl);
                 if ($domainCount >= $maxEntriesPerDomain) {
@@ -571,7 +585,7 @@ try {
         }
 
         if ($pathname === '/api/admin/settings') {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             $body = readJsonBody();
             validateSettingsPatch($body);
             Database::setInstanceMeta($pdo, $body);
@@ -582,7 +596,7 @@ try {
         }
 
         if ($pathname === '/api/admin/refresh') {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             $body = readJsonBody();
             $limit = parseLimit($body['limit'] ?? null, 10, 25);
             $rows = Database::listForRefresh($pdo, $limit);
@@ -614,7 +628,7 @@ try {
         }
 
         if (preg_match('#^/api/admin/entries/([^/]+)/status$#', $pathname, $matches)) {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             $did = decodeParam($matches[1]);
             $body = readJsonBody();
             $status = $body['status'] ?? null;
@@ -635,19 +649,24 @@ try {
         // example after the owner lost their old key). Only the operator can do this, after
         // confirming the change with the owner some other way.
         if (preg_match('#^/api/admin/entries/([^/]+)/trust-key$#', $pathname, $matches)) {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             $did = decodeParam($matches[1]);
             $row = Database::getEntryByDid($pdo, $did);
             if ($row === null) {
                 throw new AppError(404, 'not_found', 'No such entry.');
             }
+            $candidatePem = Database::getCandidateKey($pdo, $did);
             $site = Site::verifySite((string) $row['site_url'], [
                 'allowInsecure' => $allowInsecure,
                 'allowPrivate' => $allowPrivate,
                 'timeoutMs' => $refreshTimeoutMs,
+                'budgetMs' => $fetchBudgetMs,
             ]);
             if ($site['did'] !== $row['did']) {
                 throw new AppError(409, 'identity_changed', 'The site now publishes a different did:web identity.');
+            }
+            if ($candidatePem !== null && Verify::spkiFingerprint($site['publicKeyPem']) !== Verify::spkiFingerprint($candidatePem)) {
+                throw new AppError(409, 'candidate_key_mismatch', 'The site is now serving a different key than the candidate key that was flagged for review.');
             }
             $result = Entries::saveVerified($pdo, $extensions, $site, true);
             $updatedRow = Database::getEntryByDid($pdo, $did);
@@ -664,7 +683,7 @@ try {
 
     if ($method === 'DELETE') {
         if (preg_match('#^/api/admin/entries/([^/]+)$#', $pathname, $matches)) {
-            requireAdmin($adminToken);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
             $did = decodeParam($matches[1]);
             if (!Entries::remove($pdo, $extensions, $did, 'admin')) {
                 throw new AppError(404, 'not_found', 'No such entry.');

@@ -52,7 +52,17 @@ final class Verify
             return '';
         }
 
-        $host = strtolower($parts['host']);
+        $host = strtolower(rtrim($parts['host'], '.'));
+        if ($host === '' || str_contains($host, '..')) {
+            return '';
+        }
+        $unbracketed = trim($host, '[]');
+        if (
+            filter_var($unbracketed, FILTER_VALIDATE_IP) === false &&
+            !preg_match('/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/', $host)
+        ) {
+            return '';
+        }
         $port = isset($parts['port']) ? (int) $parts['port'] : null;
         if (($scheme === 'https' && $port === 443) || ($scheme === 'http' && $port === 80)) {
             $port = null;
@@ -77,7 +87,17 @@ final class Verify
         if (!is_array($parts) || empty($parts['host'])) {
             return '';
         }
-        $host = strtolower($parts['host']);
+        $host = strtolower(rtrim($parts['host'], '.'));
+        if ($host === '' || str_contains($host, '..')) {
+            return '';
+        }
+        $unbracketed = trim($host, '[]');
+        if (
+            filter_var($unbracketed, FILTER_VALIDATE_IP) === false &&
+            !preg_match('/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/', $host)
+        ) {
+            return '';
+        }
         if (!empty($parts['port'])) {
             $host .= '%3A' . (int) $parts['port'];
         }
