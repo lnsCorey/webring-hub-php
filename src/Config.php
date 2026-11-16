@@ -76,6 +76,13 @@ final class Config
             'max' => (int) ($rateSub['max'] ?? $cfg['write_rate_limit_max'] ?? 30),
         ];
 
+        $globalCrawlSub = is_array($cfg['global_crawl_rate_limit'] ?? null) ? $cfg['global_crawl_rate_limit'] : [];
+        $cfg['global_crawl_rate_limit'] = [
+            'window_seconds' => max(1, (int) ($globalCrawlSub['window_seconds'] ?? $cfg['global_crawl_rate_limit_window_seconds'] ?? 60)),
+            'max' => max(1, (int) ($globalCrawlSub['max'] ?? $cfg['global_crawl_rate_limit_max'] ?? 20)),
+        ];
+
+        $cfg['trusted_proxy_hops'] = max(1, (int) ($cfg['trusted_proxy_hops'] ?? 1));
         $cfg['allow_private_hosts'] = (bool) ($cfg['allow_private_hosts'] ?? $cfg['allow_private'] ?? false);
 
         return $cfg;
