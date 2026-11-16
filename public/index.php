@@ -5,15 +5,17 @@ namespace WebringHub;
 
 use PDO;
 
-require_once __DIR__ . '/src/AppError.php';
-require_once __DIR__ . '/src/Config.php';
-require_once __DIR__ . '/src/Verify.php';
-require_once __DIR__ . '/src/Net.php';
-require_once __DIR__ . '/src/Site.php';
-require_once __DIR__ . '/src/Database.php';
-require_once __DIR__ . '/src/Template.php';
-require_once __DIR__ . '/src/Extensions.php';
-require_once __DIR__ . '/src/Entries.php';
+$appRoot = is_dir(__DIR__ . '/../src') ? dirname(__DIR__) : __DIR__;
+
+require_once $appRoot . '/src/AppError.php';
+require_once $appRoot . '/src/Config.php';
+require_once $appRoot . '/src/Verify.php';
+require_once $appRoot . '/src/Net.php';
+require_once $appRoot . '/src/Site.php';
+require_once $appRoot . '/src/Database.php';
+require_once $appRoot . '/src/Template.php';
+require_once $appRoot . '/src/Extensions.php';
+require_once $appRoot . '/src/Entries.php';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const NONCE_TTL_SEC = 15 * 60;
@@ -287,6 +289,9 @@ try {
     $globalCrawlWindow = max(1, (int) ($config['global_crawl_rate_limit']['window_seconds'] ?? 60));
     $globalCrawlMax = max(1, (int) ($config['global_crawl_rate_limit']['max'] ?? 20));
     $refreshTimeoutMs = (int) ($config['refresh_timeout_ms'] ?? 8000);
+    $fetchBudgetMs = max(1000, (int) ($config['fetch_budget_ms'] ?? 15000));
+    $refreshCooldownSec = max(0, (int) ($config['refresh_cooldown_seconds'] ?? 300));
+    $maxEntriesPerDomain = max(1, (int) ($config['max_entries_per_domain'] ?? 10));
     $adminToken = (string) ($config['admin_token'] ?? '');
     $extensions = Extensions::load($config, $pdo);
 
@@ -451,10 +456,19 @@ try {
             if (!isset($body['siteUrl']) || !is_string($body['siteUrl'])) {
                 throw new AppError(400, 'invalid_request', 'Send JSON like {"siteUrl":"https://example.com"}.');
             }
+            $normalizedInputUrl = Verify::normalizeSiteUrl($body['siteUrl']);
+            $existingBySite = $normalizedInputUrl !== '' ? Database::getEntryBySiteUrl($pdo, $normalizedInputUrl) : null;
+            if ($existingBySite === null && $normalizedInputUrl !== '') {
+                $domainCount = Database::countEntriesByRegistrableDomain($pdo, $normalizedInputUrl);
+                if ($domainCount >= $maxEntriesPerDomain) {
+                    throw new AppError(429, 'domain_limit_reached', 'Too many entries are already listed for this domain.');
+                }
+            }
             $site = Site::verifySite($body['siteUrl'], [
                 'allowInsecure' => $allowInsecure,
                 'allowPrivate' => $allowPrivate,
                 'timeoutMs' => $refreshTimeoutMs,
+                'budgetMs' => $fetchBudgetMs,
             ]);
             $upserted = Entries::saveVerified($pdo, $extensions, $site);
             $row = Database::getEntryByDid($pdo, $site['did']);
@@ -477,10 +491,17 @@ try {
             if ($row === null || ($row['status'] ?? '') === 'blocked') {
                 throw new AppError(404, 'not_found', 'No such entry.');
             }
+            if ($refreshCooldownSec > 0 && !empty($row['last_checked_at'])) {
+                $lastCheckedTs = strtotime((string) $row['last_checked_at']);
+                if ($lastCheckedTs !== false && (time() - $lastCheckedTs) < $refreshCooldownSec) {
+                    throw new AppError(429, 'rate_limited', 'This entry was refreshed recently. Try again in a few minutes.');
+                }
+            }
             $site = Site::verifySite((string) $row['site_url'], [
                 'allowInsecure' => $allowInsecure,
                 'allowPrivate' => $allowPrivate,
                 'timeoutMs' => $refreshTimeoutMs,
+                'budgetMs' => $fetchBudgetMs,
             ]);
             if ($site['did'] !== $row['did']) {
                 throw new AppError(409, 'identity_changed', 'The site now publishes a different did:web identity.');
@@ -502,11 +523,21 @@ try {
 
             $body = readJsonBody();
             $siteUrl = $body['siteUrl'] ?? null;
+            $hubUrl = $body['hubUrl'] ?? null;
             $nonce = $body['nonce'] ?? null;
             $createdAt = $body['createdAt'] ?? null;
             $signature = $body['signature'] ?? null;
-            if (!is_string($siteUrl) || !is_string($nonce) || !is_string($createdAt) || !is_string($signature)) {
-                throw new AppError(400, 'invalid_request', 'A signed removal request needs siteUrl, nonce, createdAt and signature.');
+            if (!is_string($siteUrl) || !is_string($hubUrl) || !is_string($nonce) || !is_string($createdAt) || !is_string($signature)) {
+                throw new AppError(400, 'invalid_request', 'A signed removal request needs siteUrl, hubUrl, nonce, createdAt and signature.');
+            }
+            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
+            $expectedHubUrl = Verify::normalizeSiteUrl((string) ($meta['directoryUrl'] ?? ''));
+            if ($expectedHubUrl === '' && !empty($_SERVER['HTTP_HOST'])) {
+                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+                $expectedHubUrl = Verify::normalizeSiteUrl("{$scheme}://{$_SERVER['HTTP_HOST']}");
+            }
+            if ($expectedHubUrl === '' || Verify::normalizeSiteUrl($hubUrl) !== $expectedHubUrl) {
+                throw new AppError(403, 'hub_mismatch', 'The removal request is not addressed to this hub.');
             }
             if (!empty($body['did']) && $body['did'] !== $row['did']) {
                 throw new AppError(403, 'did_mismatch', 'The request did not name this entry.');
@@ -523,6 +554,7 @@ try {
                 'action' => 'remove',
                 'siteUrl' => (string) $row['site_url'],
                 'did' => (string) $row['did'],
+                'hubUrl' => $expectedHubUrl,
                 'nonce' => $nonce,
                 'createdAt' => $createdAt,
             ];

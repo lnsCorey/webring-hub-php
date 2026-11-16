@@ -47,6 +47,10 @@ return [
     'allow_insecure' => (getenv('ALLOW_INSECURE') ?: '0') === '1',
     'allow_private' => (getenv('ALLOW_PRIVATE_HOSTS') ?: '0') === '1',
     'refresh_timeout_ms' => (int) (getenv('REFRESH_TIMEOUT_MS') ?: 8000),
+    'fetch_budget_ms' => (int) (getenv('FETCH_BUDGET_MS') ?: 15000),
+    'refresh_cooldown_seconds' => (int) (getenv('REFRESH_COOLDOWN_SECONDS') ?: 300),
+    'max_entries_per_domain' => (int) (getenv('MAX_ENTRIES_PER_DOMAIN') ?: 10),
+    'cron_refresh_budget_seconds' => (int) (getenv('CRON_REFRESH_BUDGET_SECONDS') ?: 240),
 
     // Instance Customization (can also be updated live on /admin or via POST /api/admin/settings)
     'title' => Config::env('HUB_TITLE', 'DIRECTORY_TITLE') ?: 'Webring Hub',

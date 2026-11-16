@@ -768,6 +768,48 @@ final class Database
     }
 
     /**
+     * Extracts a registrable-like base domain (last two labels, or full host for single-label/IPs).
+     */
+    public static function registrableDomain(string $siteUrl): string
+    {
+        $host = strtolower((string) parse_url($siteUrl, PHP_URL_HOST));
+        $host = trim($host, '.[]');
+        if ($host === '' || filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return $host;
+        }
+        $parts = explode('.', $host);
+        if (count($parts) <= 2) {
+            return $host;
+        }
+        return implode('.', array_slice($parts, -2));
+    }
+
+    /**
+     * Counts non-removed entries sharing the same registrable domain as $siteUrl.
+     */
+    public static function countEntriesByRegistrableDomain(PDO $pdo, string $siteUrl, string $excludeDid = ''): int
+    {
+        $target = self::registrableDomain($siteUrl);
+        if ($target === '') {
+            return 0;
+        }
+        $stmt = $pdo->query("SELECT did, site_url FROM entries WHERE status != 'removed'");
+        $count = 0;
+        while ($row = $stmt->fetch()) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if ($excludeDid !== '' && (string) ($row['did'] ?? '') === $excludeDid) {
+                continue;
+            }
+            if (self::registrableDomain((string) ($row['site_url'] ?? '')) === $target) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public static function getEntryBySiteUrl(PDO $pdo, string $siteUrl): ?array
