@@ -74,6 +74,7 @@ foreach ($rows as $row) {
 }
 
 $extensions->emit('cron.refresh', ['checked' => $total, 'updated' => $updated, 'failed' => $failed]);
+Database::purgeExpiredRateLimits($pdo, 3600);
 
 $untouched = $total - $updated - $failed;
 fwrite(STDOUT, "[refresh] done: {$updated} updated, {$failed} failed, {$untouched} untouched\n");

@@ -153,8 +153,8 @@ final class Database
             CREATE TABLE IF NOT EXISTS entries (
               rowid BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
               id VARCHAR(255) NOT NULL,
-              site_url VARCHAR(500) NOT NULL,
-              did VARCHAR(255) NOT NULL,
+              site_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+              did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
               handle VARCHAR(100) NOT NULL DEFAULT '',
               display_name VARCHAR(200) NOT NULL,
               tagline VARCHAR(400) NOT NULL DEFAULT '',
@@ -444,7 +444,14 @@ final class Database
             if ($byDid) {
                 $pinned = trim((string) $byDid['public_key_pem']);
                 $presented = trim($fields['publicKeyPem']);
-                if ($pinned !== '' && $pinned !== $presented) {
+                $pinnedSpki = Verify::spkiFingerprint($pinned);
+                $presentedSpki = Verify::spkiFingerprint($presented);
+                $keysDiffer = $pinned !== '' && (
+                    ($pinnedSpki !== '' && $presentedSpki !== '')
+                        ? $pinnedSpki !== $presentedSpki
+                        : $pinned !== $presented
+                );
+                if ($keysDiffer) {
                     $certificates = is_array($site['keyRotations'] ?? null) ? $site['keyRotations'] : [];
                     $chainOk = Verify::verifyKeyRotationChain(
                         $pinned,
@@ -454,6 +461,7 @@ final class Database
                         $certificates
                     );
                     if (!$chainOk && !$acceptKeyChange) {
+                        self::setCandidateKey($pdo, $fields['did'], $presented);
                         throw new AppError(
                             409,
                             'key_changed',
@@ -464,6 +472,7 @@ final class Database
                     $keyRotated = true;
                     $keyAcceptedBy = $chainOk ? 'chain' : 'operator';
                     $previousKeyPem = $pinned;
+                    self::clearCandidateKey($pdo, $fields['did']);
                 }
             }
 
@@ -472,8 +481,7 @@ final class Database
             $bySite = $stmtSite->fetch();
 
             if ($bySite && (!$byDid || (int) $bySite['rowid'] !== (int) $byDid['rowid'])) {
-                $del = $pdo->prepare('DELETE FROM entries WHERE rowid = ?');
-                $del->execute([$bySite['rowid']]);
+                throw new AppError(409, 'site_conflict', 'Another entry already owns this site URL.');
             }
 
             $interestsJson = json_encode($fields['interests'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '[]';
@@ -896,12 +904,73 @@ final class Database
         return $upd->rowCount() === 1;
     }
 
+    private static function rateLimitSalt(PDO $pdo): string
+    {
+        $row = $pdo->query("SELECT `value` FROM settings WHERE `key` = 'rate_limit_salt'")->fetch();
+        if (is_array($row) && !empty($row['value']) && is_string($row['value'])) {
+            return $row['value'];
+        }
+        $salt = bin2hex(random_bytes(16));
+        $now = gmdate('c');
+        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $stmt = $pdo->prepare("INSERT OR IGNORE INTO settings (`key`, `value`, updated_at) VALUES ('rate_limit_salt', ?, ?)");
+        } else {
+            $stmt = $pdo->prepare("INSERT IGNORE INTO settings (`key`, `value`, updated_at) VALUES ('rate_limit_salt', ?, ?)");
+        }
+        $stmt->execute([$salt, $now]);
+        $again = $pdo->query("SELECT `value` FROM settings WHERE `key` = 'rate_limit_salt'")->fetch();
+        return (is_array($again) && !empty($again['value'])) ? (string) $again['value'] : $salt;
+    }
+
+    private static function hashRateLimitKey(PDO $pdo, string $ipKey): string
+    {
+        return hash_hmac('sha256', $ipKey, self::rateLimitSalt($pdo));
+    }
+
+    public static function purgeExpiredRateLimits(PDO $pdo, int $maxAgeSeconds = 3600): int
+    {
+        $cutoff = time() - max(60, $maxAgeSeconds);
+        $stmt = $pdo->prepare('DELETE FROM rate_limits WHERE window_start < ?');
+        $stmt->execute([$cutoff]);
+        return $stmt->rowCount();
+    }
+
+    public static function setCandidateKey(PDO $pdo, string $did, string $publicKeyPem): void
+    {
+        $key = 'candidate_key:' . $did;
+        $now = gmdate('c');
+        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        if ($driver === 'sqlite') {
+            $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, updated_at) VALUES (?, ?, ?) ON CONFLICT(`key`) DO UPDATE SET `value` = excluded.value, updated_at = excluded.updated_at');
+        } else {
+            $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = VALUES(updated_at)');
+        }
+        $stmt->execute([$key, $publicKeyPem, $now]);
+    }
+
+    public static function getCandidateKey(PDO $pdo, string $did): ?string
+    {
+        $stmt = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = ?');
+        $stmt->execute(['candidate_key:' . $did]);
+        $row = $stmt->fetch();
+        return (is_array($row) && is_string($row['value']) && $row['value'] !== '') ? $row['value'] : null;
+    }
+
+    public static function clearCandidateKey(PDO $pdo, string $did): void
+    {
+        $stmt = $pdo->prepare('DELETE FROM settings WHERE `key` = ?');
+        $stmt->execute(['candidate_key:' . $did]);
+    }
+
     /**
      * Checks and updates the sliding-window rate limit for a client IP key.
+     * Keys are stored as a salted HMAC so raw client IPs are never persisted.
      * Returns true if allowed, false if rate-limited.
      */
     public static function checkRateLimit(PDO $pdo, string $ipKey, int $windowSeconds, int $maxHits): bool
     {
+        $hashedKey = self::hashRateLimitKey($pdo, $ipKey);
         $nowSec = time();
         $cutoff = $nowSec - $windowSeconds;
 
@@ -913,11 +982,11 @@ final class Database
         }
 
         $stmt = $pdo->prepare('SELECT window_start, hits FROM rate_limits WHERE ip_key = ?');
-        $stmt->execute([$ipKey]);
+        $stmt->execute([$hashedKey]);
         $row = $stmt->fetch();
 
         if (!is_array($row) || (int) $row['window_start'] <= $cutoff) {
-            self::upsertRateLimit($pdo, $ipKey, $nowSec, 1);
+            self::upsertRateLimit($pdo, $hashedKey, $nowSec, 1);
             return true;
         }
 
@@ -927,7 +996,7 @@ final class Database
         }
 
         $upd = $pdo->prepare('UPDATE rate_limits SET hits = hits + 1 WHERE ip_key = ?');
-        $upd->execute([$ipKey]);
+        $upd->execute([$hashedKey]);
         return true;
     }
 

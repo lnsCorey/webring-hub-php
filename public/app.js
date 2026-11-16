@@ -48,12 +48,25 @@ function formatDate(value) {
 
 function renderAvatar(entry) {
   const avatarUrl = httpUrl(entry.avatarUrl);
-  if (!avatarUrl) {
+  const siteUrl = httpUrl(entry.siteUrl);
+  let safeAvatar = '';
+  if (avatarUrl && siteUrl) {
+    try {
+      const a = new URL(avatarUrl);
+      const s = new URL(siteUrl);
+      if (a.protocol === 'https:' && a.origin === s.origin) {
+        safeAvatar = a.href;
+      }
+    } catch {
+      safeAvatar = '';
+    }
+  }
+  if (!safeAvatar) {
     return element('div', 'avatar avatar-fallback', initials(entry.displayName));
   }
   const image = document.createElement('img');
   image.className = 'avatar';
-  image.src = avatarUrl;
+  image.src = safeAvatar;
   image.alt = '';
   image.loading = 'lazy';
   image.referrerPolicy = 'no-referrer';
