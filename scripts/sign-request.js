@@ -116,11 +116,13 @@ if (!nonce && hubUrl) {
   nonce = data.nonce;
 }
 if (!nonce) fail('--nonce is required unless --dir is given (the hub hands one out).');
+if (!hubUrl) fail('--dir <hubUrl> is required so the signed removal request names the target hub.');
+const normalizedHubUrl = normalizeSiteUrl(hubUrl);
 
 const createdAt = values.created || new Date().toISOString();
-const payload = { action: 'remove', siteUrl, did, nonce, createdAt };
+const payload = { action: 'remove', siteUrl, did, hubUrl: normalizedHubUrl, nonce, createdAt };
 const signature = signPayload(payload, privateKeyPem);
-const body = { siteUrl, did, nonce, createdAt, signature };
+const body = { siteUrl, did, hubUrl: normalizedHubUrl, nonce, createdAt, signature };
 
 if (values.curl && values.link) fail('choose one of --curl or --link.');
 

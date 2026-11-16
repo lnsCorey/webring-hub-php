@@ -1,26 +1,19 @@
-DirectoryIndex index.php
 Options -Indexes
+
+# Deny dotfiles and backup/config files even if mod_rewrite is disabled
+<FilesMatch "(^\.|^config(\.example)?(\s+copy)?\.php$|\.(bak|swp|sql|sqlite|log|sh)$|~$)">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Deny from all
+  </IfModule>
+</FilesMatch>
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
-
-  # Pass Authorization header through to PHP under LiteSpeed / FastCGI
-  RewriteCond %{HTTP:Authorization} .
-  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-
-  # Deny direct web access to internal application folders and config files
   RewriteRule ^(?:src|sql|scripts|data|extensions|docs)(?:/|$) - [F,L]
-  RewriteRule ^config(?:\.example)?\.php$ - [F,L]
-  RewriteRule ^(?:README\.md|LICENSE|\.gitignore)$ - [F,L]
-
-  # Stop rewrite processing once routed to index.php (prevents internal redirect loop)
-  RewriteRule ^index\.php$ - [L]
-
-  # Serve existing static assets (style.css, app.js, remove.js, admin.js, icons) directly
-  RewriteCond %{REQUEST_FILENAME} -f
-  RewriteCond %{REQUEST_URI} !\.(?:php|html)$ [NC]
-  RewriteRule ^ - [L]
-
-  # Route everything else (/, /remove, /admin, /.well-known/did.json, /api/*) through index.php
-  RewriteRule . index.php [QSA,L]
+  RewriteRule ^config(?:\.example)?(?:\s+copy)?\.php$ - [F,L]
+  RewriteRule ^(?:README\.md|LICENSE|\.gitignore|nginx\.example\.conf)$ - [F,L]
+  RewriteRule (^|/)\. - [F,L]
 </IfModule>

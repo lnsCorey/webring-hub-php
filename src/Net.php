@@ -316,14 +316,21 @@ final class Net
     public static function safeGetJson(string $urlString, array $options = []): array
     {
         $timeoutMs = (int) ($options['timeoutMs'] ?? 8000);
+        $budgetMs = max(1000, (int) ($options['budgetMs'] ?? 15000));
         $maxBytes = (int) ($options['maxBytes'] ?? (2 * 1024 * 1024));
         $maxRedirects = (int) ($options['maxRedirects'] ?? 3);
         $allowInsecure = (bool) ($options['allowInsecure'] ?? false);
         $allowPrivate = (bool) ($options['allowPrivate'] ?? false);
         $userAgent = (string) ($options['userAgent'] ?? self::DEFAULT_USER_AGENT);
+        $deadline = microtime(true) + ($budgetMs / 1000.0);
 
         $currentUrl = trim($urlString);
         for ($hop = 0; $hop <= $maxRedirects; $hop++) {
+            $remainingMs = (int) round(($deadline - microtime(true)) * 1000);
+            if ($remainingMs <= 0) {
+                throw new AppError(504, 'fetch_timeout', 'The remote site took too long to respond.');
+            }
+            $hopTimeoutMs = min($timeoutMs, $remainingMs);
             $parts = parse_url($currentUrl);
             if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
                 throw new AppError(400, 'invalid_url', 'The URL is not valid.');
@@ -356,7 +363,7 @@ final class Net
 
             $pinnedIp = self::resolveAndValidateHost($host, $allowPrivate);
 
-            $result = self::requestOnce($rebuiltUrl, $host, $port, $pinnedIp, $timeoutMs, $maxBytes, $userAgent);
+            $result = self::requestOnce($rebuiltUrl, $host, $port, $pinnedIp, $hopTimeoutMs, $maxBytes, $userAgent);
             if (isset($result['redirect'])) {
                 if ($hop === $maxRedirects) {
                     throw new AppError(502, 'too_many_redirects', 'The remote site redirected too many times.');
