@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "slug": "starfall-siege",
+  "title": "Starfall Siege",
+  "description": "Defend the orbital horizon against descending phalanxes. Use destructible shield bunkers, snipe bonus command cruisers, and clear each wave before touchdown.",
+  "version": "1.0.0",
+  "author": "Webring Suite",
+  "license": "MIT",
+  "entry": "index.html",
+  "thumbnail": "thumbnail.svg",
+  "tags": ["arcade", "shooter", "retro", "classic"],
+  "players": 1,
+  "orientation": "landscape",
+  "aspectRatio": "4 / 3",
+  "controls": [
+    { "action": "Move Cannon", "keys": ["ArrowLeft", "ArrowRight", "A", "D"] },
+    { "action": "Fire Laser", "keys": ["Space", "Z"] },
+    { "action": "Restart", "keys": ["Enter", "R"] }
+  ],
+  "score": {
+    "enabled": true,
+    "direction": "higher",
+    "min": 0,
+    "max": 999999,
+    "label": "Score",
+    "unit": "points"
+  },
+  "capabilities": ["canvas", "audio", "keyboard"],
+  "sdk": 1
+}

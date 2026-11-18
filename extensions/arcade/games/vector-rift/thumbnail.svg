@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 225">
+  <rect width="400" height="225" fill="#050814"/>
+  <g stroke="#0ea5e9" stroke-width="1.5" fill="none" opacity="0.7">
+    <polygon points="200,25 310,60 345,112 310,165 200,200 90,165 55,112 90,60"/>
+    <polygon points="200,75 245,90 260,112 245,135 200,150 155,135 140,112 155,90"/>
+    <line x1="200" y1="25" x2="200" y2="75"/>
+    <line x1="310" y1="60" x2="245" y2="90"/>
+    <line x1="345" y1="112" x2="260" y2="112"/>
+    <line x1="310" y1="165" x2="245" y2="135"/>
+    <line x1="200" y1="200" x2="200" y2="150"/>
+    <line x1="90" y1="165" x2="155" y2="135"/>
+    <line x1="55" y1="112" x2="140" y2="112"/>
+    <line x1="90" y1="60" x2="155" y2="90"/>
+  </g>
+  <polygon points="182,198 200,178 218,198" fill="none" stroke="#facc15" stroke-width="3"/>
+  <circle cx="200" cy="145" r="4" fill="#facc15"/>
+  <polygon points="235,105 248,112 235,120 222,112" fill="none" stroke="#f43f5e" stroke-width="2.5"/>
+  <text x="20" y="210" fill="#38bdf8" font-family="monospace" font-size="16" font-weight="bold">VECTOR RIFT</text>
+</svg>

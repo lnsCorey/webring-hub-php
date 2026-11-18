@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Webring Arcade</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <h1 id="arcade-title">Webring Arcade</h1>
+        <p id="arcade-subtitle">Self-hosted HTML5 arcade with Webring DID leaderboards</p>
+      </div>
+      <div>
+        <a href="../../" class="btn">← Back to Hub</a>
+      </div>
+    </header>
+
+    <section class="panel" aria-label="Player Identity">
+      <div class="player-bar">
+        <label for="did-input"><strong>Player DID:</strong></label>
+        <input id="did-input" class="input" type="text" placeholder="did:web:alice.example" autocomplete="off" />
+        <button id="did-save-btn" class="btn btn-primary" type="button">Set Player</button>
+        <button id="did-history-btn" class="btn hidden" type="button">My Play History</button>
+        <button id="did-clear-btn" class="btn hidden" type="button">Clear</button>
+        <span id="did-status" class="status-pill status-warn">Playing as Guest (scores not saved)</span>
+      </div>
+      <p class="notice">
+        Note: Games can be played without a DID. Leaderboards record scores for active hub DIDs (claimed DID mode for MVP).
+      </p>
+    </section>
+
+    <section class="panel" id="catalog-controls">
+      <div class="player-bar">
+        <input id="search-input" class="input" type="search" placeholder="Search games by title or tag…" />
+        <select id="tag-select" class="input">
+          <option value="">All tags</option>
+        </select>
+      </div>
+    </section>
+
+    <section id="catalog-view">
+      <div id="games-grid" class="grid"></div>
+    </section>
+
+    <section id="detail-view" class="panel hidden">
+      <div class="player-bar" style="justify-content: space-between;">
+        <h2 id="detail-title" style="margin: 0;"></h2>
+        <div style="display: flex; gap: 0.5rem;">
+          <button id="play-start-btn" class="btn btn-primary" type="button">▶ Play Now</button>
+          <button id="detail-close-btn" class="btn" type="button">Back to Games</button>
+        </div>
+      </div>
+      <p id="detail-desc" class="notice" style="font-size: 0.95rem;"></p>
+      <div id="detail-controls" class="tags" style="margin: 0.75rem 0;"></div>
+
+      <div id="play-container" class="hidden">
+        <div class="player-bar" style="justify-content: space-between; margin-top: 0.75rem;">
+          <span id="session-status" class="status-pill status-ok">Session Ready</span>
+          <button id="play-stop-btn" class="btn btn-danger" type="button">Exit Game</button>
+        </div>
+        <div class="stage-wrap">
+          <iframe
+            id="game-frame"
+            class="stage-frame"
+            sandbox="allow-scripts allow-pointer-lock"
+            allow="fullscreen; gamepad"
+            allowfullscreen
+            referrerpolicy="no-referrer"
+            title="Arcade Game"
+          ></iframe>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 1.5rem;">Leaderboard</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Player</th>
+            <th>Score</th>
+            <th>When</th>
+          </tr>
+        </thead>
+        <tbody id="leaderboard-body"></tbody>
+      </table>
+    </section>
+
+    <section id="history-view" class="panel hidden">
+      <div class="player-bar" style="justify-content: space-between;">
+        <h2 style="margin: 0;">Player History</h2>
+        <button id="history-close-btn" class="btn" type="button">Close</button>
+      </div>
+      <h3>Personal Bests</h3>
+      <table>
+        <thead>
+          <tr><th>Game</th><th>Best Score</th><th>Achieved</th></tr>
+        </thead>
+        <tbody id="history-bests-body"></tbody>
+      </table>
+      <h3 style="margin-top: 1.25rem;">Recent Runs</h3>
+      <table>
+        <thead>
+          <tr><th>Game</th><th>Score</th><th>Duration</th><th>Finished</th></tr>
+        </thead>
+        <tbody id="history-plays-body"></tbody>
+      </table>
+    </section>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>

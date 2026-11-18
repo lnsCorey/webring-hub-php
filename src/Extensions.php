@@ -27,6 +27,9 @@ final class ExtensionContext
     /** @var list<array{method: string, pattern: string, regex: string, handler: callable, admin: bool, rateLimited: bool}> */
     public array $routes = [];
 
+    /** @var list<array{mountPath: string, realDir: string, index: string, cache: int, cors: bool, csp: string, frameable: bool, headers: mixed, allowedExtensions: array<string, string>}> */
+    public array $publicRoutes = [];
+
     /** @var array<string, list<callable>> */
     public array $listeners = [];
 
@@ -38,7 +41,8 @@ final class ExtensionContext
         public readonly string $id,
         public readonly array $manifest,
         private readonly PDO $pdo,
-        private readonly array $config
+        private readonly array $config,
+        public readonly string $dir = ''
     ) {
     }
 
@@ -60,6 +64,72 @@ final class ExtensionContext
     public function post(string $subPath, callable $handler, array $opts = []): void
     {
         $this->addRoute('POST', $subPath, $handler, $opts);
+    }
+
+    /**
+     * @param array{admin?: bool, rateLimited?: bool} $opts
+     */
+    public function delete(string $subPath, callable $handler, array $opts = []): void
+    {
+        $this->addRoute('DELETE', $subPath, $handler, $opts);
+    }
+
+    /**
+     * Serves static files under $dir at `/ext/<id>/<prefix>/...`.
+     * The directory must resolve inside the extension's own folder.
+     *
+     * @param array{index?: string, cache?: int, cors?: bool, csp?: string, frameable?: bool, headers?: mixed, extensions?: list<string>} $opts
+     */
+    public function serveFiles(string $prefix, string $dir, array $opts = []): void
+    {
+        if ($this->dir === '') {
+            throw new \RuntimeException('Extension directory is not set.');
+        }
+        $extReal = realpath($this->dir);
+        $candidateDir = str_starts_with($dir, '/') || preg_match('/^[A-Za-z]:[\\\\\/]/', $dir)
+            ? $dir
+            : $this->dir . '/' . ltrim($dir, '/\\');
+        $targetReal = realpath($candidateDir);
+        if ($extReal === false || $targetReal === false || !is_dir($targetReal)) {
+            throw new \InvalidArgumentException("Static directory does not exist: {$dir}");
+        }
+        $extPrefix = rtrim($extReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        if ($targetReal !== $extReal && !str_starts_with($targetReal, $extPrefix)) {
+            throw new \InvalidArgumentException('Static directory must stay inside the extension folder.');
+        }
+
+        $cleanPrefix = trim($prefix, '/');
+        if ($cleanPrefix !== '' && !preg_match('#^[a-z0-9_-]+(/[a-z0-9_-]+)*$#i', $cleanPrefix)) {
+            throw new \InvalidArgumentException("Invalid static prefix: {$prefix}");
+        }
+        $mountPath = '/ext/' . $this->id . ($cleanPrefix !== '' ? '/' . $cleanPrefix : '');
+
+        $allowedMap = Extensions::PUBLIC_MIME_TYPES;
+        if (isset($opts['extensions']) && is_array($opts['extensions'])) {
+            $filtered = [];
+            foreach ($opts['extensions'] as $ext) {
+                $k = strtolower(ltrim((string) $ext, '.'));
+                if (isset(Extensions::PUBLIC_MIME_TYPES[$k])) {
+                    $filtered[$k] = Extensions::PUBLIC_MIME_TYPES[$k];
+                }
+            }
+            $allowedMap = $filtered;
+        }
+
+        $defaultCsp = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+        $this->publicRoutes[] = [
+            'mountPath' => $mountPath,
+            'realDir' => $targetReal,
+            'index' => (string) ($opts['index'] ?? 'index.html'),
+            'cache' => max(0, (int) ($opts['cache'] ?? 300)),
+            'cors' => !empty($opts['cors']),
+            'csp' => (string) ($opts['csp'] ?? $defaultCsp),
+            'frameable' => !empty($opts['frameable']),
+            'headers' => $opts['headers'] ?? [],
+            'allowedExtensions' => $allowedMap,
+        ];
+        // Sort longest mountPath first so specific sub-mounts (e.g. /ext/arcade/games) win over /ext/arcade
+        usort($this->publicRoutes, static fn (array $a, array $b): int => strlen($b['mountPath']) <=> strlen($a['mountPath']));
     }
 
     /**
@@ -215,6 +285,37 @@ final class Extensions
 {
     public const API_VERSION = 1;
 
+    public const PUBLIC_MIME_TYPES = [
+        'html' => 'text/html; charset=utf-8',
+        'htm' => 'text/html; charset=utf-8',
+        'js' => 'text/javascript; charset=utf-8',
+        'mjs' => 'text/javascript; charset=utf-8',
+        'css' => 'text/css; charset=utf-8',
+        'json' => 'application/json; charset=utf-8',
+        'png' => 'image/png',
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'gif' => 'image/gif',
+        'webp' => 'image/webp',
+        'avif' => 'image/avif',
+        'svg' => 'image/svg+xml',
+        'ico' => 'image/x-icon',
+        'woff' => 'font/woff',
+        'woff2' => 'font/woff2',
+        'ttf' => 'font/ttf',
+        'otf' => 'font/otf',
+        'mp3' => 'audio/mpeg',
+        'ogg' => 'audio/ogg',
+        'wav' => 'audio/wav',
+        'm4a' => 'audio/mp4',
+        'wasm' => 'application/wasm',
+        'glb' => 'model/gltf-binary',
+        'gltf' => 'model/gltf+json',
+        'bin' => 'application/octet-stream',
+        'txt' => 'text/plain; charset=utf-8',
+        'map' => 'application/json; charset=utf-8',
+    ];
+
     public const EVENTS = [
         'entry.verified',
         'entry.key_rejected',
@@ -303,6 +404,7 @@ final class Extensions
                 'apiVersion' => $ctx ? (int) ($ctx->manifest['apiVersion'] ?? self::API_VERSION) : 0,
                 'schemaVersion' => $ctx ? $ctx->schemaVersion() : 0,
                 'routes' => $ctx ? array_map(static fn ($r) => $r['method'] . ' ' . $r['pattern'], $ctx->routes) : [],
+                'public' => $ctx ? array_values(array_map(static fn ($p) => $p['mountPath'] . '/', $ctx->publicRoutes)) : [],
                 'events' => $ctx ? array_keys($ctx->listeners) : [],
                 'error' => $this->errors[$id] ?? null,
             ];
@@ -365,6 +467,114 @@ final class Extensions
                 }
             }
         }
+        return null;
+    }
+
+    /**
+     * Resolves a GET/HEAD request under `/ext/<id>/...` to a validated static file inside an
+     * enabled extension's registered `serveFiles()` directory.
+     *
+     * @return array{filePath: string, mimeType: string, etag: string, headers: array<string, string>, frameable: bool}|null
+     */
+    public function resolvePublicFile(string $pathname): ?array
+    {
+        if (!str_starts_with($pathname, '/ext/')) {
+            return null;
+        }
+        if (
+            str_contains($pathname, "\0") ||
+            preg_match('/%(?:2e|2f|5c|00)/i', $pathname) ||
+            str_contains($pathname, '\\')
+        ) {
+            throw new AppError(400, 'invalid_path', 'Malformed URL path.');
+        }
+
+        $decoded = rawurldecode($pathname);
+        if (str_contains($decoded, "\0") || str_contains($decoded, '\\')) {
+            throw new AppError(400, 'invalid_path', 'Malformed URL path.');
+        }
+        foreach (explode('/', $decoded) as $seg) {
+            if ($seg === '..' || ($seg !== '' && str_starts_with($seg, '.'))) {
+                throw new AppError(403, 'forbidden', 'Forbidden path.');
+            }
+        }
+
+        foreach ($this->loaded as $ctx) {
+            foreach ($ctx->publicRoutes as $route) {
+                $mount = $route['mountPath'];
+                if ($decoded !== $mount && !str_starts_with($decoded, $mount . '/')) {
+                    continue;
+                }
+                $rel = ltrim(substr($decoded, strlen($mount)), '/');
+                if ($rel === '' || str_ends_with($decoded, '/')) {
+                    $rel = ($rel === '' ? '' : rtrim($rel, '/') . '/') . $route['index'];
+                }
+                $candidate = $route['realDir'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+                if (is_dir($candidate)) {
+                    $candidate = rtrim($candidate, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $route['index'];
+                    $rel = rtrim($rel, '/') . '/' . $route['index'];
+                }
+                $realFile = realpath($candidate);
+                $realRootPrefix = rtrim($route['realDir'], DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                if ($realFile === false || !is_file($realFile) || !str_starts_with($realFile, $realRootPrefix)) {
+                    throw new AppError(404, 'not_found', 'Not found.');
+                }
+                // Check every segment inside realDir for hidden dotfiles
+                $insideRel = str_replace(DIRECTORY_SEPARATOR, '/', substr($realFile, strlen($realRootPrefix)));
+                foreach (explode('/', $insideRel) as $part) {
+                    if ($part !== '' && str_starts_with($part, '.')) {
+                        throw new AppError(403, 'forbidden', 'Forbidden path.');
+                    }
+                }
+                $ext = strtolower(pathinfo($realFile, PATHINFO_EXTENSION));
+                $mime = $route['allowedExtensions'][$ext] ?? null;
+                if ($mime === null) {
+                    throw new AppError(403, 'forbidden', 'File type is not allowed.');
+                }
+
+                $mtime = (int) @filemtime($realFile);
+                $size = (int) @filesize($realFile);
+                $etag = '"' . substr(hash('sha256', $realFile . ':' . $mtime . ':' . $size), 0, 32) . '"';
+
+                $headers = [
+                    'Cache-Control' => $route['cache'] > 0 ? "public, max-age={$route['cache']}" : 'no-cache',
+                    'ETag' => $etag,
+                ];
+                if ($route['cors']) {
+                    $headers['Access-Control-Allow-Origin'] = '*';
+                }
+                if ($ext === 'html' || $ext === 'htm') {
+                    $headers['Cache-Control'] = 'no-cache';
+                    if ($route['csp'] !== '') {
+                        $headers['Content-Security-Policy'] = $route['csp'];
+                    }
+                } elseif ($ext === 'svg') {
+                    $headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'";
+                }
+
+                if (is_callable($route['headers'])) {
+                    $extra = ($route['headers'])($insideRel, $mime);
+                    if (is_array($extra)) {
+                        foreach ($extra as $k => $v) {
+                            $headers[(string) $k] = (string) $v;
+                        }
+                    }
+                } elseif (is_array($route['headers'])) {
+                    foreach ($route['headers'] as $k => $v) {
+                        $headers[(string) $k] = (string) $v;
+                    }
+                }
+
+                return [
+                    'filePath' => $realFile,
+                    'mimeType' => $mime,
+                    'etag' => $etag,
+                    'headers' => $headers,
+                    'frameable' => $route['frameable'],
+                ];
+            }
+        }
+
         return null;
     }
 
@@ -446,7 +656,7 @@ final class Extensions
         if (!$instance instanceof Extension) {
             throw new \RuntimeException("{$class} does not implement WebringHub\\Extension.");
         }
-        $ctx = new ExtensionContext($id, $manifest, $pdo, $config);
+        $ctx = new ExtensionContext($id, $manifest, $pdo, $config, $dir);
         $instance->register($ctx);
         $this->loaded[$id] = $ctx;
     }
