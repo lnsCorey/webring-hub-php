@@ -33,11 +33,37 @@ const STATIC_ASSETS = [
     '/logo-mark.png' => ['logo-mark.png', 'image/png'],
 ];
 
-function setCommonHeaders(): void
+function setCommonHeaders(bool $frameable = false): void
 {
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: no-referrer');
-    header('X-Frame-Options: DENY');
+    if (!$frameable) {
+        header('X-Frame-Options: DENY');
+    }
+}
+
+/**
+ * @param array{filePath: string, mimeType: string, etag: string, headers: array<string, string>, frameable: bool} $resolved
+ */
+function sendExtensionFile(array $resolved, bool $headOnly = false): never
+{
+    $ifNoneMatch = trim((string) ($_SERVER['HTTP_IF_NONE_MATCH'] ?? ''));
+    setCommonHeaders($resolved['frameable']);
+    foreach ($resolved['headers'] as $k => $v) {
+        header("{$k}: {$v}");
+    }
+    if ($ifNoneMatch !== '' && $ifNoneMatch === $resolved['etag']) {
+        http_response_code(304);
+        exit;
+    }
+    $bytes = (string) file_get_contents($resolved['filePath']);
+    http_response_code(200);
+    header('Content-Type: ' . $resolved['mimeType']);
+    header('Content-Length: ' . strlen($bytes));
+    if (!$headOnly) {
+        echo $bytes;
+    }
+    exit;
 }
 
 /**
@@ -449,6 +475,11 @@ try {
 
         $dispatchExtension();
 
+        $publicFile = $extensions->resolvePublicFile($pathname);
+        if ($publicFile !== null) {
+            sendExtensionFile($publicFile, $headOnly);
+        }
+
         throw new AppError(404, 'not_found', 'Not found.');
     }
 
@@ -692,6 +723,7 @@ try {
             setCommonHeaders();
             exit;
         }
+        $dispatchExtension();
         throw new AppError(404, 'not_found', 'Not found.');
     }
 

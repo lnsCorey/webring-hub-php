@@ -84,6 +84,9 @@ final class Config
 
         $cfg['trusted_proxy_hops'] = max(1, (int) ($cfg['trusted_proxy_hops'] ?? 1));
         $cfg['allow_private_hosts'] = (bool) ($cfg['allow_private_hosts'] ?? $cfg['allow_private'] ?? false);
+        if (empty($cfg['extensions']) || !is_array($cfg['extensions'])) {
+            $cfg['extensions'] = array_values(array_filter(array_map('trim', explode(',', self::env('HUB_EXTENSIONS', 'DIRECTORY_EXTENSIONS')))));
+        }
 
         return $cfg;
     }

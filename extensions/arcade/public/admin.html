@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <title>Arcade Operator Admin</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Arcade Operator Admin</h1>
+        <p>Manage installed games, check manifest validation, and moderate scores</p>
+      </div>
+      <div>
+        <a href="./" class="btn">← Back to Arcade</a>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="player-bar">
+        <label for="admin-token"><strong>Admin Bearer Token:</strong></label>
+        <input id="admin-token" class="input" type="password" placeholder="Paste hub admin_token…" />
+        <button id="admin-load-btn" class="btn btn-primary" type="button">Connect</button>
+        <span id="admin-status" class="notice"></span>
+      </div>
+    </section>
+
+    <section id="admin-main" class="panel hidden">
+      <h2>Installed Games</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Slug</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Plays / Scored</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="admin-games-body"></tbody>
+      </table>
+
+      <h3 style="margin-top: 1.5rem;">Manifest Validation Errors</h3>
+      <div id="admin-errors" class="notice">None</div>
+
+      <h3 style="margin-top: 1.5rem;">Purge Player Data</h3>
+      <div class="player-bar">
+        <input id="purge-did-input" class="input" type="text" placeholder="did:web:example.com" />
+        <button id="purge-did-btn" class="btn btn-danger" type="button">Purge DID Scores &amp; History</button>
+      </div>
+    </section>
+  </div>
+  <script src="./admin.js"></script>
+</body>
+</html>

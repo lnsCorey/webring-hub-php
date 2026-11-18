@@ -255,8 +255,9 @@ Extensions run inside the hub with full access (PHP can't sandbox them), so only
 Included:
 
 - **`key-witness`**: records which signing key the hub saw for each listed site, and how any change was accepted. Webring Studio's **Check with Webring Hubs** button compares this with the key Studio pinned for a friend. When it's enabled, existing entries are filled in as `first-seen`.
+- **`arcade`**: self-hosted HTML5/JavaScript arcade at `/ext/arcade/` with sandboxed games (`vector-rift` and `starfall-siege` included), DID high-score leaderboards, play history, and operator moderation at `/ext/arcade/admin.html`.
 
-Run `php scripts/smoke-extensions.php` to check the framework and key-witness against a temporary SQLite database.
+Run `php scripts/smoke-extensions.php` and `php scripts/smoke-arcade.php` to check the framework, `key-witness`, and `arcade` against a temporary SQLite database.
 
 ## Self-service removal
 

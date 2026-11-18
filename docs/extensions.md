@@ -126,6 +126,8 @@ final class MyExtension implements Extension
 | --- | --- |
 | `get(string $subPath, callable $handler, array $opts = [])` | Adds a GET (and HEAD) route at `/api/ext/<id>/<subPath>`. `$subPath` must start with a version segment such as `v1/`. `{name}` matches one path segment, URL-decoded. Options: `admin` (needs the Bearer admin token) and `rateLimited` (counts toward the write rate limit). |
 | `post(...)` | The same, for POST. Read the body with `$req->json()` (64 KB limit, JSON object). |
+| `delete(...)` | The same, for DELETE. |
+| `serveFiles(string $prefix, string $dir, array $opts = [])` | Serves static files inside `$dir` (which must resolve under the extension folder) at `/ext/<id>/<prefix>/...` with an explicit web-safe MIME allowlist, ETag/304 support, traversal/dotfile blocking, optional `cors`, `csp`, and `frameable` headers. |
 | `on(string $event, callable $handler)` | Listens for a core event (below). |
 | `migrate(int $version, callable $up)` | Runs `$up(PDO $pdo, string $driver)` once when the stored schema version is lower. Call it with increasing versions. The version is kept in `settings` under `ext:<id>:schema`. Support both `sqlite` and `mysql`. |
 | `table(string $suffix)` | Your table name: `ext_<id with - as _>_<suffix>`. |

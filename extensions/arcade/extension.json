@@ -1,0 +1,25 @@
+{
+  "id": "arcade",
+  "name": "Arcade",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "class": "WebringHub\\Ext\\Arcade\\ArcadeExtension",
+  "description": "A self-hosted arcade of HTML/JavaScript games with DID high scores and play history.",
+  "author": "Webring Suite",
+  "homepage": "",
+  "routes": [
+    "GET v1/games",
+    "GET v1/games/{slug}",
+    "GET v1/games/{slug}/scores",
+    "POST v1/games/{slug}/sessions",
+    "POST v1/games/{slug}/scores",
+    "GET v1/players/{did}/history",
+    "GET v1/admin/games",
+    "POST v1/admin/games/{slug}/enabled",
+    "DELETE v1/admin/players/{did}",
+    "DELETE v1/admin/games/{slug}/scores"
+  ],
+  "events": ["entry.removed", "cron.refresh"],
+  "tables": ["games", "scores", "plays", "sessions", "limits"],
+  "public": ["/ext/arcade/", "/ext/arcade/games/"]
+}
