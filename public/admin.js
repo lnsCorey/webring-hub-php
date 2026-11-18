@@ -35,7 +35,17 @@ const els = {
   settingsForm: $('settings-form'),
   settingsMessage: $('settings-message'),
   extList: $('ext-list'),
-  extMessage: $('ext-message')
+  extMessage: $('ext-message'),
+  notices: $('admin-notices'),
+  keyDialog: $('key-dialog'),
+  keyDialogSite: $('key-dialog-site'),
+  keyDialogDid: $('key-dialog-did'),
+  keyDialogPinned: $('key-dialog-pinned'),
+  keyDialogCandidate: $('key-dialog-candidate'),
+  keyDialogFirstSeen: $('key-dialog-first-seen'),
+  keyDialogConflict: $('key-dialog-conflict'),
+  keyDialogMessage: $('key-dialog-message'),
+  keyDialogTrust: $('key-dialog-trust')
 };
 
 const state = {
@@ -148,6 +158,12 @@ function shortFingerprint(fp) {
   return typeof fp === 'string' && fp.length > 16 ? `${fp.slice(0, 10)}…${fp.slice(-6)}` : fp || '';
 }
 
+/** Full fingerprint in groups of four (uppercase), the form to read out to a site owner. */
+function groupFingerprint(fp) {
+  if (typeof fp !== 'string' || !fp) return '—';
+  return fp.toUpperCase().match(/.{1,4}/g).join(' ');
+}
+
 function setMessage(node, text, kind) {
   node.textContent = text || '';
   node.className = `form-message${kind ? ` ${kind}` : ''}`;
@@ -189,6 +205,9 @@ function signOut(message, kind) {
   els.signinPanel.hidden = false;
   els.body.replaceChildren();
   els.extList.replaceChildren();
+  els.notices.replaceChildren();
+  els.notices.hidden = true;
+  if (els.keyDialog.open) els.keyDialog.close();
   state.entries = [];
   state.rowMessages.clear();
   els.token.value = '';
@@ -220,6 +239,7 @@ async function signIn(token) {
     renderExtensions(Array.isArray(data.extensions) ? data.extensions : []);
     loadEntries();
     loadSettings();
+    loadStatus();
   } catch (err) {
     clearToken();
     setMessage(els.signinMessage, explainSignInError(err), 'error');
@@ -334,7 +354,7 @@ function renderRow(entry) {
     checks.append(errEl);
   }
 
-  // Key fingerprint
+  // Key fingerprint, plus a warning while the site serves a new key nobody has reviewed yet
   const key = cell(tr, 'Key');
   if (entry.keyFingerprint) {
     const fp = element('code', 'admin-fp', shortFingerprint(entry.keyFingerprint));
@@ -342,6 +362,18 @@ function renderRow(entry) {
     key.append(fp);
   } else {
     key.append(element('span', 'admin-sub', '—'));
+  }
+  if (entry.keyChanged) {
+    const badges = element('div', 'admin-key-badges');
+    const changed = element('span', 'admin-badge admin-badge-key-changed', 'Key changed');
+    changed.title = 'The site now serves a different signing key without a rotation certificate. The listing keeps the old key until you review the new one.';
+    badges.append(changed);
+    if (entry.candidateConflict) {
+      const conflict = element('span', 'admin-badge admin-badge-key-conflict', 'Multiple new keys seen');
+      conflict.title = 'The site has served more than one new key since the change was first detected.';
+      badges.append(conflict);
+    }
+    key.append(badges);
   }
 
   // Actions
@@ -368,7 +400,9 @@ function renderRow(entry) {
     disabled: status === 'blocked',
     title: status === 'blocked' ? 'Unblock the site first; blocked sites are never re-checked.' : 'Fetch and verify the site again now'
   });
-  addButton('Trust new key', 'trust', { title: "Accept the site's current signing key" });
+  if (entry.keyChanged) {
+    addButton('Review new key', 'trust', { title: 'Compare fingerprints and decide whether to trust the new key' });
+  }
   addButton('Delete', 'delete', { danger: true });
   actions.append(group);
 
@@ -389,12 +423,8 @@ async function runAction(entry, action) {
   const label = entryLabel(entry);
 
   if (action === 'trust') {
-    const ok = window.confirm(
-      `Trust the signing key that ${label} publishes now?\n\n` +
-        'Only do this after you have confirmed the key change with the site owner some other way (for example, they lost their old key). ' +
-        'Accepting a key you have not confirmed could hand the listing to whoever controls the domain now.'
-    );
-    if (!ok) return;
+    openKeyDialog(entry);
+    return;
   }
   if (action === 'delete') {
     const ok = window.confirm(
@@ -424,12 +454,6 @@ async function runAction(entry, action) {
     } else if (action === 'refresh') {
       await api(`/api/entries/${enc}/refresh`, { method: 'POST', admin: false });
       note = { kind: 'success', text: 'Re-verified just now.' };
-    } else if (action === 'trust') {
-      const data = await api(`/api/admin/entries/${enc}/trust-key`, { method: 'POST' });
-      note = {
-        kind: 'success',
-        text: data.keyChanged ? 'New signing key accepted.' : 'Re-verified. The key had not changed.'
-      };
     } else if (action === 'delete') {
       await api(`/api/admin/entries/${enc}`, { method: 'DELETE' });
       note = { kind: 'success', text: 'Deleted.' };
@@ -446,6 +470,170 @@ async function runAction(entry, action) {
   setMessage(els.listStatus, `${label}: ${note.text}`, note.kind);
   els.listStatus.dataset.keep = '1';
   await loadEntries();
+}
+
+// ---- key review dialog ----
+
+let keyDialogEntry = null;
+
+function openKeyDialog(entry) {
+  keyDialogEntry = entry;
+  els.keyDialogSite.textContent = entryLabel(entry);
+  els.keyDialogDid.textContent = entry.did;
+  els.keyDialogPinned.textContent = groupFingerprint(entry.keyFingerprint);
+  els.keyDialogCandidate.textContent = groupFingerprint(entry.candidateFingerprint);
+  const firstSeen = formatDateTime(entry.candidateFirstSeenAt);
+  els.keyDialogFirstSeen.textContent = firstSeen ? `(first seen ${firstSeen})` : '';
+  els.keyDialogConflict.hidden = !entry.candidateConflict;
+  els.keyDialogTrust.disabled = false;
+  setMessage(els.keyDialogMessage, '');
+  els.keyDialog.showModal();
+}
+
+const KEY_ERROR_TEXT = {
+  served_key_changed:
+    'The site is now serving a different key from the one shown here, so nothing was changed. Close this, refresh the site and review again.',
+  candidate_mismatch: 'The new key on record changed while this was open. Close this and review the key again.',
+  no_candidate: 'There is no new key waiting for review any more (the site may be serving its pinned key again).',
+  identity_changed: 'The site now publishes a different did:web identity, so its key cannot be trusted here.'
+};
+
+els.keyDialogTrust.addEventListener('click', async () => {
+  const entry = keyDialogEntry;
+  if (!entry) return;
+  els.keyDialogTrust.disabled = true;
+  setMessage(els.keyDialogMessage, 'Fetching the site and checking it still serves this key…');
+  try {
+    const data = await api(`/api/admin/entries/${encodeURIComponent(entry.did)}/trust-key`, {
+      method: 'POST',
+      body: { expectedFingerprint: entry.candidateFingerprint }
+    });
+    els.keyDialog.close();
+    const text = data.keyChanged ? 'New signing key trusted and pinned.' : 'Re-verified. The key had not changed.';
+    state.rowMessages.set(entry.did, { kind: 'success', text });
+    setMessage(els.listStatus, `${entryLabel(entry)}: ${text}`, 'success');
+    els.listStatus.dataset.keep = '1';
+    await loadEntries();
+  } catch (err) {
+    setMessage(els.keyDialogMessage, KEY_ERROR_TEXT[err.code] || err.message || 'Could not trust the key.', 'error');
+    els.keyDialogTrust.disabled = err.code === 'served_key_changed' || err.code === 'candidate_mismatch' || err.code === 'no_candidate';
+    if (err.code in KEY_ERROR_TEXT) loadEntries();
+  }
+});
+
+els.keyDialog.addEventListener('close', () => {
+  keyDialogEntry = null;
+});
+
+// ---- operator notices (hub URL, IP salt, schema upgrades) ----
+
+function notice(kind, title, ...parts) {
+  const box = element('div', `admin-notice admin-notice-${kind}`);
+  box.setAttribute('role', kind === 'info' ? 'note' : 'alert');
+  box.append(element('strong', null, title));
+  for (const part of parts) box.append(part);
+  return box;
+}
+
+function renderNotices(status) {
+  const items = [];
+  if (!status.hubUrlConfigured) {
+    const fix = element('button', 'admin-button admin-button-sm', 'Set the Hub URL');
+    fix.type = 'button';
+    fix.addEventListener('click', () => {
+      const input = $('set-hub-url');
+      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      input.focus();
+    });
+    items.push(
+      notice(
+        'warning',
+        'Self-service removal is disabled until the Hub URL is set.',
+        element(
+          'p',
+          null,
+          "Signed removal requests name the hub they're meant for, and this hub needs its own public URL to check that. Until it is set, site owners can't remove their own listings."
+        ),
+        fix
+      )
+    );
+  }
+
+  const maintenance = status.maintenance || {};
+  const conflicts = Array.isArray(maintenance.collationConflicts) ? maintenance.collationConflicts : [];
+  const errors = Array.isArray(maintenance.migrationErrors) ? maintenance.migrationErrors : [];
+  const pending = Array.isArray(maintenance.pendingMigrations) ? maintenance.pendingMigrations : [];
+  if (errors.length || conflicts.length || pending.length) {
+    const parts = [];
+    if (pending.length) {
+      parts.push(
+        element(
+          'p',
+          null,
+          `${pending.length} schema upgrade(s) have not run yet (auto_migrate is probably off), so adding or refreshing sites may fail until they do: ${pending.join(', ')}.`
+        )
+      );
+    }
+    if (conflicts.length) {
+      parts.push(
+        element(
+          'p',
+          null,
+          'These listings differ only by letter case or accents, which lets one site be mistaken for another. Delete the duplicates you do not want, then retry:'
+        )
+      );
+      const ul = element('ul');
+      for (const group of conflicts) {
+        ul.append(element('li', 'admin-mono', `${group.column}: ${(group.values || []).join('  ·  ')}`));
+      }
+      parts.push(ul);
+    }
+    const other = errors.filter((e) => !(conflicts.length && e.id === '2026_11_collation_bin'));
+    if (other.length) {
+      const ul = element('ul');
+      for (const e of other) ul.append(element('li', null, `${e.id}: ${e.message}`));
+      parts.push(element('p', null, 'These schema upgrades failed:'), ul);
+    }
+    const retry = element('button', 'admin-button admin-button-sm', errors.length || conflicts.length ? 'Retry upgrades' : 'Run upgrades now');
+    retry.type = 'button';
+    retry.addEventListener('click', async () => {
+      retry.disabled = true;
+      try {
+        await api('/api/admin/migrations/retry', { method: 'POST', body: {} });
+      } catch (err) {
+        setMessage(els.listStatus, err.message || 'The retry failed.', 'error');
+      }
+      await loadStatus();
+    });
+    parts.push(retry);
+    items.push(notice('error', 'Database maintenance needed', ...parts));
+  }
+
+  if (status.ipSaltInDatabase) {
+    items.push(
+      notice(
+        'info',
+        'Visitor IP hashes use a salt stored in the database.',
+        element(
+          'p',
+          null,
+          "Set IP_HASH_SALT (or 'ip_hash_salt' in config.php) to a random value of 32+ characters, for example from: openssl rand -hex 32. Then a leaked database can't be used to recover visitors' IP addresses."
+        )
+      )
+    );
+  }
+
+  els.notices.replaceChildren(...items);
+  els.notices.hidden = items.length === 0;
+}
+
+async function loadStatus() {
+  try {
+    const status = await api('/api/admin/status');
+    if (state.signedIn) renderNotices(status);
+  } catch {
+    // Notices are advisory; the rest of the page still works without them.
+  }
 }
 
 let searchTimer;
@@ -584,6 +772,7 @@ els.settingsForm.addEventListener('submit', async (event) => {
     const data = await api('/api/admin/settings', { method: 'POST', body: patch });
     fillSettings(settingsFromInfo(data.settings));
     setMessage(els.settingsMessage, 'Saved. The public page uses the new settings now.', 'success');
+    loadStatus();
   } catch (err) {
     setMessage(els.settingsMessage, err.message || 'Could not save the settings.', 'error');
   } finally {

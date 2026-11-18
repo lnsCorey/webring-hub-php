@@ -48,13 +48,13 @@ function expectError(callable $fn, string $code, string $label): void
     }
 }
 
-function callExt(Extensions $ext, string $method, string $path, array $query = [], array $body = []): array
+function callExt(Extensions $ext, string $method, string $path, array $query = [], array $body = [], string $clientKey = 'client-a'): array
 {
     $match = $ext->match($method, $path);
     if ($match === null) {
         throw new RuntimeException("No route matched {$method} {$path}");
     }
-    $req = new ExtensionRequest($method, $path, $query, static fn (): array => $body);
+    $req = new ExtensionRequest($method, $path, $query, static fn (): array => $body, $clientKey);
     return Extensions::run($match, $req);
 }
 
@@ -68,7 +68,7 @@ $ext = Extensions::load(['extensions' => ['arcade']], $pdo);
 echo "loader & static files\n";
 check($ext->isLoaded('arcade'), 'arcade extension loads');
 $adminInfo = $ext->adminList()[0] ?? [];
-check(($adminInfo['schemaVersion'] ?? 0) === 1, 'arcade migrated to schema 1');
+check(($adminInfo['schemaVersion'] ?? 0) === 2, 'arcade migrated to schema 2');
 check(in_array('/ext/arcade/', $adminInfo['public'] ?? [], true), 'adminList reports /ext/arcade/ public mount');
 
 $landing = $ext->resolvePublicFile('/ext/arcade/');
@@ -78,6 +78,10 @@ check(($landing['frameable'] ?? true) === false, 'arcade landing page is not fra
 $gameHtml = $ext->resolvePublicFile('/ext/arcade/games/vector-rift/index.html');
 check($gameHtml !== null && ($gameHtml['frameable'] ?? false) === true, 'game HTML is frameable');
 check(($gameHtml['headers']['Access-Control-Allow-Origin'] ?? '') === '*', 'game route sets CORS header');
+check(
+    str_starts_with($gameHtml['headers']['Content-Security-Policy'] ?? '', 'sandbox allow-scripts allow-pointer-lock;'),
+    'game pages are sandboxed by CSP even when opened directly (no access to hub storage)'
+);
 
 $thumbSvg = $ext->resolvePublicFile('/ext/arcade/games/vector-rift/thumbnail.svg');
 check(
@@ -158,6 +162,59 @@ check($status === 200 && count($lb['scores'] ?? []) === 1 && ($lb['scores'][0]['
 
 [$status, $hist] = callExt($ext, 'GET', '/api/ext/arcade/v1/players/' . rawurlencode($aliceDid) . '/history');
 check($status === 200 && count($hist['bestScores'] ?? []) === 1 && count($hist['recentPlays'] ?? []) === 2, 'player history returns bests and both runs');
+
+check(($score2['verified'] ?? true) === false, 'score responses say the score is unverified');
+check(($lb['scores'][0]['verified'] ?? true) === false, 'leaderboard rows carry verified=false');
+
+echo "public reads don't write\n";
+$snapshot = static fn (): string => json_encode($pdo->query('SELECT slug, present, updated_at, last_seen_at FROM ext_arcade_games ORDER BY slug')->fetchAll())
+    . '|' . $pdo->query('SELECT COUNT(*) FROM ext_arcade_limits')->fetchColumn();
+$freshExt = Extensions::load(['extensions' => ['arcade']], $pdo); // a new request: no per-request cache
+$pdo->exec("UPDATE ext_arcade_games SET last_seen_at = '2000-01-01T00:00:00Z'");
+$before = $snapshot();
+callExt($freshExt, 'GET', '/api/ext/arcade/v1/games');
+callExt($freshExt, 'GET', '/api/ext/arcade/v1/games/vector-rift');
+callExt($freshExt, 'GET', '/api/ext/arcade/v1/games/vector-rift/scores');
+check($snapshot() === $before, 'catalog, game and leaderboard reads leave the database untouched');
+$freshExt->emit('cron.refresh', ['checked' => 0, 'updated' => 0, 'failed' => 0]);
+check((string) $pdo->query("SELECT last_seen_at FROM ext_arcade_games WHERE slug = 'vector-rift'")->fetchColumn() !== '2000-01-01T00:00:00Z', 'the cron refresh rescans the games folder');
+
+echo "per-client limits\n";
+$quotaPdo = new PDO('sqlite::memory:');
+$quotaPdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$quotaPdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+Database::migrate($quotaPdo);
+$quotaExt = Extensions::load([
+    'extensions' => ['arcade'],
+    'extension_settings' => ['arcade' => ['max_sessions_per_did_hour' => 2, 'max_sessions_per_ip_hour' => 3]],
+], $quotaPdo);
+$bobDid = 'did:web:bob_b.example';
+$carolDid = 'did:web:bobxb.example';
+foreach ([$bobDid, $carolDid] as $playerDid) {
+    Entries::saveVerified($quotaPdo, $quotaExt, [
+        'siteUrl' => 'https://' . substr($playerDid, strlen('did:web:')),
+        'did' => $playerDid,
+        'manifest' => [],
+        'profile' => ['displayName' => $playerDid, 'updatedAt' => '2026-11-17T00:00:00Z'],
+        'publicKeyPem' => Verify::generateKeyPair()['publicKeyPem'],
+        'keyRotations' => [],
+    ]);
+}
+$startAs = static fn (string $did, string $client) => callExt($quotaExt, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], ['did' => $did], $client);
+$startAs($bobDid, 'attacker');
+$startAs($bobDid, 'attacker');
+expectError(static fn () => $startAs($bobDid, 'attacker'), 'rate_limited', 'one client is limited per player');
+[$status] = $startAs($bobDid, 'real-bob');
+check($status === 201, "another client can still start sessions for that player (the attacker can't use up their quota)");
+$startAs($carolDid, 'attacker');
+expectError(static fn () => $startAs($carolDid, 'attacker'), 'rate_limited', 'one client is limited across all players');
+
+echo "exact purge\n";
+$carolRowsBefore = (int) $quotaPdo->query("SELECT COUNT(*) FROM ext_arcade_limits WHERE did = 'did:web:bobxb.example'")->fetchColumn();
+Entries::remove($quotaPdo, $quotaExt, $bobDid, 'admin');
+$carolRowsAfter = (int) $quotaPdo->query("SELECT COUNT(*) FROM ext_arcade_limits WHERE did = 'did:web:bobxb.example'")->fetchColumn();
+check($carolRowsBefore > 0 && $carolRowsAfter === $carolRowsBefore, 'removing bob_b does not purge bobxb (_ is not a wildcard)');
+check((int) $quotaPdo->query("SELECT COUNT(*) FROM ext_arcade_limits WHERE did = 'did:web:bob_b.example'")->fetchColumn() === 0, "removing a player deletes that player's limit rows");
 
 echo "admin & cleanup\n";
 callExt($ext, 'POST', '/api/ext/arcade/v1/admin/games/starfall-siege/enabled', [], ['enabled' => false]);

@@ -11,6 +11,7 @@ namespace WebringHub;
 final class Site
 {
     public const MAX_JSON_BYTES = 2 * 1024 * 1024;
+    public const DEFAULT_BUDGET_MS = 15000;
 
     private static function fail(string $code, string $message, int $status = 422): AppError
     {
@@ -28,6 +29,9 @@ final class Site
         } catch (AppError $err) {
             if ($err->status === 404) {
                 throw self::fail('not_found', "No document was found at {$url}.", 422);
+            }
+            if ($err->errorCode === 'fetch_timeout') {
+                throw self::fail('verify_timeout', 'The site took too long to respond. Try again later.', 504);
             }
             throw $err;
         }
@@ -121,6 +125,10 @@ final class Site
         $allowInsecure = (bool) ($options['allowInsecure'] ?? false);
         $allowPrivate = (bool) ($options['allowPrivate'] ?? false);
         $timeoutMs = (int) ($options['timeoutMs'] ?? 8000);
+        // One wall-clock budget for the whole verification (manifest, did.json, its fallback and
+        // the profile), not one per fetch, so a slow site can hold a PHP worker for at most this long.
+        $budgetMs = max(1000, (int) ($options['budgetMs'] ?? self::DEFAULT_BUDGET_MS));
+        $deadline = microtime(true) + ($budgetMs / 1000.0);
 
         $siteUrl = Verify::normalizeSiteUrl($rawSiteUrl);
         if ($siteUrl === '') {
@@ -137,6 +145,8 @@ final class Site
             'maxBytes' => self::MAX_JSON_BYTES,
             'allowInsecure' => $allowInsecure,
             'allowPrivate' => $allowPrivate,
+            'budgetMs' => $budgetMs,
+            'deadline' => $deadline,
         ];
 
         $manifestRes = self::fetchJson($siteUrl . '/api/manifest.json', $fetchOptions);

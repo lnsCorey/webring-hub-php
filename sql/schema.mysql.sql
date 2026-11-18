@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS entries (
   id VARCHAR(255) NOT NULL,
   site_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  registrable_domain VARCHAR(255) NOT NULL DEFAULT '',
   handle VARCHAR(100) NOT NULL DEFAULT '',
   display_name VARCHAR(200) NOT NULL,
   tagline VARCHAR(400) NOT NULL DEFAULT '',
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS entries (
   UNIQUE KEY uq_entries_did (did),
   KEY idx_entries_status (status),
   KEY idx_entries_checked (last_checked_at),
+  KEY idx_entries_domain (registrable_domain),
   FULLTEXT KEY fts_entries (display_name, handle, tagline, bio, location, interests_text)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -54,4 +56,22 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   window_start BIGINT NOT NULL,
   hits INT NOT NULL DEFAULT 1,
   PRIMARY KEY (ip_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Versioned schema upgrades applied by Database::migrate (see README, Security & operations).
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id VARCHAR(100) NOT NULL,
+  applied_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- New signing keys awaiting operator review (first one seen is kept; conflict = another key appeared later).
+CREATE TABLE IF NOT EXISTS key_candidates (
+  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  public_key_pem TEXT NOT NULL,
+  fingerprint CHAR(64) NOT NULL,
+  first_seen_at VARCHAR(40) NOT NULL,
+  last_seen_at VARCHAR(40) NOT NULL,
+  conflict TINYINT(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (did)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

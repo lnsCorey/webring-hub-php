@@ -46,8 +46,11 @@ $rawKeys = $pdo->query("SELECT ip_key FROM rate_limits")->fetchAll(PDO::FETCH_CO
 check(count($rawKeys) === 1 && !str_contains((string) $rawKeys[0], '203.0.113.5'), 'raw client IP is not stored in rate_limits');
 
 echo "candidate_key\n";
-Database::setCandidateKey($pdo, 'did:web:alice.example', 'CANDIDATE-PEM');
-check(Database::getCandidateKey($pdo, 'did:web:alice.example') === 'CANDIDATE-PEM', 'stores and retrieves candidate key');
+// Phase 5 moved candidates to their own table; the end-to-end flow is in smoke-security-phase5.php.
+$candidatePem = Verify::generateKeyPair()['publicKeyPem'];
+Database::recordCandidateKey($pdo, 'did:web:alice.example', $candidatePem);
+$stored = Database::getCandidateKey($pdo, 'did:web:alice.example');
+check($stored !== null && $stored['fingerprint'] === Verify::spkiFingerprint($candidatePem), 'stores and retrieves candidate key');
 Database::clearCandidateKey($pdo, 'did:web:alice.example');
 check(Database::getCandidateKey($pdo, 'did:web:alice.example') === null, 'clears candidate key');
 

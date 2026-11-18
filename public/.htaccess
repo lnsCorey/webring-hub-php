@@ -1,6 +1,16 @@
 DirectoryIndex index.php
 Options -Indexes
 
+# Security headers for files Apache serves directly (app.js, style.css, icons). index.php sets
+# its own. HSTS is only sent over HTTPS; browsers ignore it on plain HTTP anyway.
+<IfModule mod_headers.c>
+  Header always unset X-Powered-By
+  Header unset X-Powered-By
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "no-referrer"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" "expr=%{HTTPS} == 'on'"
+</IfModule>
+
 # Block dotfiles (e.g. .git, .htaccess, .env) even without mod_rewrite
 <FilesMatch "^\.">
   <IfModule mod_authz_core.c>
