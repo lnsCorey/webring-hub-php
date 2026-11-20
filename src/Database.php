@@ -418,9 +418,13 @@ final class Database
             }
             return false;
         }
-        $stmt = $pdo->prepare("SHOW COLUMNS FROM {$table} LIKE ?");
-        $stmt->execute([$column]);
-        return count($stmt->fetchAll()) > 0;
+        // Not `SHOW COLUMNS ... LIKE ?`: with native prepares (ATTR_EMULATE_PREPARES off),
+        // MySQL and MariaDB reject placeholders in SHOW statements (error 1064).
+        $stmt = $pdo->prepare(
+            'SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?'
+        );
+        $stmt->execute([$table, $column]);
+        return $stmt->fetchColumn() !== false;
     }
 
     /** Fills `registrable_domain` for rows that don't have it yet. Returns how many were set. */
