@@ -1385,3 +1385,143 @@ pre code {
     max-width: none;
   }
 }
+
+/* ---- Admin: operator notices, key review (security phase 5) ---- */
+
+.admin-notices {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.admin-notice {
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 0.86rem;
+}
+
+.admin-notice strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-bright);
+}
+
+.admin-notice p {
+  margin: 4px 0 0;
+}
+
+.admin-notice ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.admin-notice .admin-button {
+  margin-top: 8px;
+}
+
+.admin-notice-warning {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.admin-notice-error {
+  border-color: var(--err-border);
+  background: var(--err-soft);
+}
+
+.admin-notice-info {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.admin-badge-key-changed {
+  background: var(--err-soft);
+  border-color: var(--err-border);
+  color: var(--err);
+  text-transform: none;
+}
+
+.admin-badge-key-conflict {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+  text-transform: none;
+}
+
+.admin-key-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.admin-dialog {
+  width: min(560px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.admin-dialog::backdrop {
+  background: rgba(2, 6, 23, 0.7);
+}
+
+.admin-dialog h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+.admin-dialog-site code {
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-fp-compare dt {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.admin-fp-compare dd {
+  margin: 4px 0 0;
+}
+
+.admin-fp-full {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+
+.admin-callout {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 0.82rem;
+}
+
+.admin-callout-error {
+  border: 1px solid var(--err-border);
+  background: var(--err-soft);
+  color: var(--text-bright);
+}
+
+.admin-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}

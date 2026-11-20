@@ -5,6 +5,8 @@ namespace WebringHub;
 
 use PDO;
 
+require_once __DIR__ . '/PublicSuffix.php';
+
 /**
  * PDO database layer for Webring Hub (MySQL / MariaDB for Hostinger Premium,
  * with SQLite fallback support).
@@ -87,6 +89,8 @@ final class Database
             }
         }
 
+        self::configureIpHashSalt((string) ($config['ip_hash_salt'] ?? ''));
+
         $autoMigrate = (bool) ($dbCfg['auto_migrate'] ?? $config['auto_migrate'] ?? true);
         if ($autoMigrate) {
             self::migrate($pdo);
@@ -145,7 +149,20 @@ final class Database
                   window_start INTEGER NOT NULL,
                   hits INTEGER NOT NULL DEFAULT 1
                 );
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                  id TEXT PRIMARY KEY,
+                  applied_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS key_candidates (
+                  did TEXT NOT NULL PRIMARY KEY,
+                  public_key_pem TEXT NOT NULL,
+                  fingerprint TEXT NOT NULL,
+                  first_seen_at TEXT NOT NULL,
+                  last_seen_at TEXT NOT NULL,
+                  conflict INTEGER NOT NULL DEFAULT 0
+                );
             ");
+            self::runMigrations($pdo, $driver);
             return;
         }
 
@@ -212,27 +229,260 @@ final class Database
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ");
 
-        // Auto-upgrade columns if an earlier schema.mysql.sql was imported manually
-        try {
-            $cols = $pdo->query("SHOW COLUMNS FROM settings LIKE 'setting_key'")->fetchAll();
-            if (count($cols) > 0) {
-                $pdo->exec("ALTER TABLE settings CHANGE COLUMN setting_key `key` VARCHAR(100) NOT NULL, CHANGE COLUMN setting_value `value` MEDIUMTEXT NOT NULL");
-            }
-            $rlCols = $pdo->query("SHOW COLUMNS FROM rate_limits LIKE 'hit_count'")->fetchAll();
-            if (count($rlCols) > 0) {
-                $pdo->exec("DROP TABLE rate_limits");
-                $pdo->exec("
-                    CREATE TABLE rate_limits (
-                      ip_key VARCHAR(128) NOT NULL,
-                      window_start BIGINT NOT NULL,
-                      hits INT NOT NULL DEFAULT 1,
-                      PRIMARY KEY (ip_key)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                ");
-            }
-        } catch (\Throwable) {
-            // Ignore if SHOW COLUMNS is restricted
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+              id VARCHAR(100) NOT NULL,
+              applied_at VARCHAR(40) NOT NULL,
+              PRIMARY KEY (id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+        ");
+
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS key_candidates (
+              did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+              public_key_pem TEXT NOT NULL,
+              fingerprint CHAR(64) NOT NULL,
+              first_seen_at VARCHAR(40) NOT NULL,
+              last_seen_at VARCHAR(40) NOT NULL,
+              conflict TINYINT(1) NOT NULL DEFAULT 0,
+              PRIMARY KEY (did)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+
+        self::runMigrations($pdo, $driver);
+    }
+
+    /** Setting-key prefix under which a failed migration's error is kept for the admin page. */
+    private const MIGRATION_ERROR_PREFIX = 'migration_error:';
+
+    /** Setting key holding look-alike rows that block the MySQL collation migration. */
+    public const COLLATION_CONFLICTS_KEY = 'maintenance:collation_conflicts';
+
+    /**
+     * Runs the versioned schema upgrades in order. Each runs once and is recorded in
+     * `schema_migrations`. A failure is stored (and shown on the admin page) instead of being
+     * swallowed, and is not retried on every request: the operator retries it from the admin page
+     * (`POST /api/admin/migrations/retry`) once the cause is fixed.
+     */
+    public static function runMigrations(PDO $pdo, ?string $driver = null, bool $retryFailed = false): void
+    {
+        $driver ??= (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $applied = [];
+        foreach ($pdo->query('SELECT id FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN) as $id) {
+            $applied[(string) $id] = true;
         }
+        $failed = [];
+        $stmt = $pdo->prepare('SELECT `key` FROM settings WHERE `key` LIKE ?');
+        $stmt->execute([self::MIGRATION_ERROR_PREFIX . '%']);
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $key) {
+            $failed[substr((string) $key, strlen(self::MIGRATION_ERROR_PREFIX))] = true;
+        }
+
+        foreach (self::migrations($driver) as $id => $up) {
+            if (isset($applied[$id]) || (isset($failed[$id]) && !$retryFailed)) {
+                continue;
+            }
+            self::runMigration($pdo, $id, $up);
+        }
+    }
+
+    /**
+     * Runs one migration and records the outcome. Returns true when it is applied.
+     *
+     * @param callable(PDO): void $up
+     */
+    public static function runMigration(PDO $pdo, string $id, callable $up): bool
+    {
+        $done = $pdo->prepare('SELECT 1 FROM schema_migrations WHERE id = ?');
+        $done->execute([$id]);
+        if ($done->fetchColumn() !== false) {
+            return true;
+        }
+        try {
+            $up($pdo);
+            $ins = $pdo->prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)');
+            $ins->execute([$id, self::isoNow()]);
+            $clear = $pdo->prepare('DELETE FROM settings WHERE `key` = ?');
+            $clear->execute([self::MIGRATION_ERROR_PREFIX . $id]);
+            return true;
+        } catch (\Throwable $err) {
+            error_log("[webring-hub-php] migration {$id} failed: " . $err->getMessage());
+            self::upsertSetting($pdo, self::MIGRATION_ERROR_PREFIX . $id, self::cleanSingleLine($err->getMessage(), 500) ?: 'Unknown error', self::isoNow());
+            return false;
+        }
+    }
+
+    /**
+     * The ordered schema upgrades. Every step checks the current schema first, so it is safe on
+     * installs that were created from `sql/schema.mysql.sql` or already have the change.
+     *
+     * @return array<string, callable(PDO): void>
+     */
+    private static function migrations(string $driver): array
+    {
+        $isSqlite = $driver === 'sqlite';
+        $steps = [];
+
+        if (!$isSqlite) {
+            // Installs that imported an early schema.mysql.sql used different column names.
+            $steps['2026_10_legacy_column_names'] = static function (PDO $pdo): void {
+                $cols = $pdo->query("SHOW COLUMNS FROM settings LIKE 'setting_key'")->fetchAll();
+                if (count($cols) > 0) {
+                    $pdo->exec("ALTER TABLE settings CHANGE COLUMN setting_key `key` VARCHAR(100) NOT NULL, CHANGE COLUMN setting_value `value` MEDIUMTEXT NOT NULL");
+                }
+                $rlCols = $pdo->query("SHOW COLUMNS FROM rate_limits LIKE 'hit_count'")->fetchAll();
+                if (count($rlCols) > 0) {
+                    $pdo->exec("DROP TABLE rate_limits");
+                    $pdo->exec("
+                        CREATE TABLE rate_limits (
+                          ip_key VARCHAR(128) NOT NULL,
+                          window_start BIGINT NOT NULL,
+                          hits INT NOT NULL DEFAULT 1,
+                          PRIMARY KEY (ip_key)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    ");
+                }
+            };
+        }
+
+        // Phase 4 kept candidate keys in `settings`, inside a transaction that was rolled back, so
+        // most were never saved. Move any that were into the dedicated table.
+        $steps['2026_11_key_candidates_table'] = static function (PDO $pdo): void {
+            $stmt = $pdo->prepare('SELECT `key`, `value`, updated_at FROM settings WHERE `key` LIKE ?');
+            $stmt->execute(['candidate_key:%']);
+            foreach ($stmt->fetchAll() as $row) {
+                $did = substr((string) $row['key'], strlen('candidate_key:'));
+                $pem = (string) $row['value'];
+                if ($did !== '' && Verify::spkiFingerprint($pem) !== '') {
+                    self::recordCandidateKey($pdo, $did, $pem, (string) $row['updated_at']);
+                }
+            }
+            $del = $pdo->prepare('DELETE FROM settings WHERE `key` LIKE ?');
+            $del->execute(['candidate_key:%']);
+        };
+
+        // Indexed registrable domain for the per-domain listing cap (filled in from site_url).
+        $steps['2026_11_registrable_domain'] = static function (PDO $pdo) use ($isSqlite): void {
+            if (!self::columnExists($pdo, 'entries', 'registrable_domain')) {
+                $pdo->exec($isSqlite
+                    ? "ALTER TABLE entries ADD COLUMN registrable_domain TEXT NOT NULL DEFAULT ''"
+                    : "ALTER TABLE entries ADD COLUMN registrable_domain VARCHAR(255) NOT NULL DEFAULT '' AFTER did");
+                $pdo->exec($isSqlite
+                    ? 'CREATE INDEX IF NOT EXISTS idx_entries_domain ON entries(registrable_domain)'
+                    : 'ALTER TABLE entries ADD KEY idx_entries_domain (registrable_domain)');
+            }
+            self::backfillRegistrableDomains($pdo);
+        };
+
+        if (!$isSqlite) {
+            // site_url and did must compare byte for byte, so `Example.com` and `example.com`
+            // (or accented look-alikes) can't be two listings or match each other. Tables created
+            // before phase 4 used the case- and accent-insensitive default collation.
+            $steps['2026_11_collation_bin'] = static function (PDO $pdo): void {
+                $conflicts = [];
+                foreach (['site_url', 'did'] as $col) {
+                    $rows = $pdo->query("
+                        SELECT GROUP_CONCAT({$col} SEPARATOR '\n') AS vals, COUNT(*) AS n
+                        FROM entries
+                        GROUP BY {$col} COLLATE utf8mb4_unicode_ci
+                        HAVING COUNT(*) > 1
+                    ")->fetchAll();
+                    foreach ($rows as $row) {
+                        $conflicts[] = ['column' => $col, 'values' => explode("\n", (string) $row['vals'])];
+                    }
+                }
+                if (count($conflicts) > 0) {
+                    self::upsertSetting($pdo, self::COLLATION_CONFLICTS_KEY, (string) json_encode($conflicts, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), self::isoNow());
+                    throw new \RuntimeException(count($conflicts) . ' group(s) of listings differ only by letter case or accents. Remove the duplicates, then retry.');
+                }
+                $pdo->exec("
+                    ALTER TABLE entries
+                      MODIFY site_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                      MODIFY did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL
+                ");
+                $clear = $pdo->prepare('DELETE FROM settings WHERE `key` = ?');
+                $clear->execute([self::COLLATION_CONFLICTS_KEY]);
+            };
+        }
+
+        return $steps;
+    }
+
+    private static function columnExists(PDO $pdo, string $table, string $column): bool
+    {
+        if ((string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite') {
+            foreach ($pdo->query("PRAGMA table_info({$table})")->fetchAll() as $col) {
+                if (($col['name'] ?? '') === $column) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        $stmt = $pdo->prepare("SHOW COLUMNS FROM {$table} LIKE ?");
+        $stmt->execute([$column]);
+        return count($stmt->fetchAll()) > 0;
+    }
+
+    /** Fills `registrable_domain` for rows that don't have it yet. Returns how many were set. */
+    public static function backfillRegistrableDomains(PDO $pdo): int
+    {
+        $rows = $pdo->query("SELECT rowid, site_url FROM entries WHERE registrable_domain = ''")->fetchAll();
+        $upd = $pdo->prepare('UPDATE entries SET registrable_domain = ? WHERE rowid = ?');
+        foreach ($rows as $row) {
+            $upd->execute([self::registrableDomain((string) $row['site_url']), $row['rowid']]);
+        }
+        return count($rows);
+    }
+
+    /**
+     * Operator-facing health notes for the admin page: failed migrations and the look-alike rows
+     * that block the collation migration.
+     *
+     * @return array{migrationErrors: list<array{id: string, message: string}>, collationConflicts: list<array{column: string, values: list<string>}>, pendingMigrations: list<string>}
+     */
+    public static function maintenanceStatus(PDO $pdo): array
+    {
+        $errors = [];
+        $stmt = $pdo->prepare('SELECT `key`, `value` FROM settings WHERE `key` LIKE ? ORDER BY `key`');
+        $stmt->execute([self::MIGRATION_ERROR_PREFIX . '%']);
+        foreach ($stmt->fetchAll() as $row) {
+            $errors[] = [
+                'id' => substr((string) $row['key'], strlen(self::MIGRATION_ERROR_PREFIX)),
+                'message' => (string) $row['value'],
+            ];
+        }
+        $conflicts = [];
+        $c = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = ?');
+        $c->execute([self::COLLATION_CONFLICTS_KEY]);
+        $raw = $c->fetchColumn();
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $group) {
+                    if (is_array($group) && is_array($group['values'] ?? null)) {
+                        $conflicts[] = [
+                            'column' => (string) ($group['column'] ?? ''),
+                            'values' => array_values(array_map('strval', $group['values'])),
+                        ];
+                    }
+                }
+            }
+        }
+        // Upgrades that have neither run nor failed: normal while auto_migrate is off after a deploy,
+        // and the code that needs them (e.g. registrable_domain) fails until they run.
+        try {
+            $applied = array_flip(array_map('strval', $pdo->query('SELECT id FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN)));
+        } catch (\Throwable) {
+            $applied = []; // the table itself doesn't exist yet: every upgrade is pending
+        }
+        $failedIds = array_flip(array_column($errors, 'id'));
+        $pending = [];
+        foreach (array_keys(self::migrations((string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME))) as $id) {
+            if (!isset($applied[$id]) && !isset($failedIds[$id])) {
+                $pending[] = $id;
+            }
+        }
+        return ['migrationErrors' => $errors, 'collationConflicts' => $conflicts, 'pendingMigrations' => $pending];
     }
 
     private static function substrLen(string $str, int $max): string
@@ -431,6 +681,10 @@ final class Database
     {
         $now ??= self::isoNow();
         $fields = self::entryFields($site);
+        $registrableDomain = self::registrableDomain($fields['siteUrl']);
+        // A refused key is recorded only after the transaction is rolled back (below); writing it
+        // inside the transaction would undo it along with everything else.
+        $pendingCandidatePem = null;
 
         $pdo->beginTransaction();
         try {
@@ -461,7 +715,7 @@ final class Database
                         $certificates
                     );
                     if (!$chainOk && !$acceptKeyChange) {
-                        self::setCandidateKey($pdo, $fields['did'], $presented);
+                        $pendingCandidatePem = $presented;
                         throw new AppError(
                             409,
                             'key_changed',
@@ -472,8 +726,10 @@ final class Database
                     $keyRotated = true;
                     $keyAcceptedBy = $chainOk ? 'chain' : 'operator';
                     $previousKeyPem = $pinned;
-                    self::clearCandidateKey($pdo, $fields['did']);
                 }
+                // The site serves the pinned key again (or a chain/operator accepted a new one), so
+                // any candidate under review no longer applies.
+                self::clearCandidateKey($pdo, $fields['did']);
             }
 
             $stmtSite = $pdo->prepare('SELECT rowid FROM entries WHERE site_url = ?');
@@ -490,7 +746,7 @@ final class Database
             if ($byDid) {
                 $upd = $pdo->prepare("
                     UPDATE entries SET
-                      site_url = ?, handle = ?, display_name = ?, tagline = ?, bio = ?, location = ?,
+                      site_url = ?, registrable_domain = ?, handle = ?, display_name = ?, tagline = ?, bio = ?, location = ?,
                       avatar_url = ?, banner_url = ?, interests_json = ?, interests_text = ?, links_json = ?,
                       public_key_pem = ?, profile_updated_at = ?, verified_at = ?, last_checked_at = ?,
                       fail_count = 0, last_error = NULL,
@@ -500,6 +756,7 @@ final class Database
                 ");
                 $upd->execute([
                     $fields['siteUrl'],
+                    $registrableDomain,
                     $fields['handle'],
                     $fields['displayName'],
                     $fields['tagline'],
@@ -523,15 +780,16 @@ final class Database
 
             $ins = $pdo->prepare("
                 INSERT INTO entries (
-                  id, site_url, did, handle, display_name, tagline, bio, location, avatar_url, banner_url,
+                  id, site_url, did, registrable_domain, handle, display_name, tagline, bio, location, avatar_url, banner_url,
                   interests_json, interests_text, links_json, public_key_pem, profile_updated_at,
                   verified_at, last_checked_at, fail_count, last_error, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'active', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'active', ?, ?)
             ");
             $ins->execute([
                 $fields['id'],
                 $fields['siteUrl'],
                 $fields['did'],
+                $registrableDomain,
                 $fields['handle'],
                 $fields['displayName'],
                 $fields['tagline'],
@@ -555,8 +813,26 @@ final class Database
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
+            if ($pendingCandidatePem !== null && $err instanceof AppError && $err->errorCode === 'key_changed') {
+                self::recordCandidateKey($pdo, $fields['did'], $pendingCandidatePem, $now);
+            }
             throw $err;
         }
+    }
+
+    /**
+     * Records a check that failed without counting it toward marking the entry stale. Used for
+     * refreshes anyone can trigger, so a visitor can't push a briefly unreachable site to stale;
+     * `last_checked_at` still moves forward, which starts the refresh cooldown.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function recordCheckAttempt(PDO $pdo, array $row, string $message, ?string $now = null): void
+    {
+        $now ??= self::isoNow();
+        $error = self::cleanSingleLine($message, 500) ?: 'Unknown error';
+        $stmt = $pdo->prepare('UPDATE entries SET last_checked_at = ?, last_error = ? WHERE rowid = ?');
+        $stmt->execute([$now, $error, $row['rowid']]);
     }
 
     /**
@@ -776,24 +1052,18 @@ final class Database
     }
 
     /**
-     * Extracts a registrable-like base domain (last two labels, or full host for single-label/IPs).
+     * The registrable domain of a site URL, using the Public Suffix List, so `alice.github.io`
+     * and `bob.github.io` are different domains while `a.example.com` and `b.example.com` are
+     * the same one. IP literals and single labels are returned as they are.
      */
     public static function registrableDomain(string $siteUrl): string
     {
         $host = strtolower((string) parse_url($siteUrl, PHP_URL_HOST));
-        $host = trim($host, '.[]');
-        if ($host === '' || filter_var($host, FILTER_VALIDATE_IP) !== false) {
-            return $host;
-        }
-        $parts = explode('.', $host);
-        if (count($parts) <= 2) {
-            return $host;
-        }
-        return implode('.', array_slice($parts, -2));
+        return PublicSuffix::registrableDomain($host);
     }
 
     /**
-     * Counts non-removed entries sharing the same registrable domain as $siteUrl.
+     * Counts listed entries (any status) that share $siteUrl's registrable domain.
      */
     public static function countEntriesByRegistrableDomain(PDO $pdo, string $siteUrl, string $excludeDid = ''): int
     {
@@ -801,20 +1071,11 @@ final class Database
         if ($target === '') {
             return 0;
         }
-        $stmt = $pdo->query("SELECT did, site_url FROM entries WHERE status != 'removed'");
-        $count = 0;
-        while ($row = $stmt->fetch()) {
-            if (!is_array($row)) {
-                continue;
-            }
-            if ($excludeDid !== '' && (string) ($row['did'] ?? '') === $excludeDid) {
-                continue;
-            }
-            if (self::registrableDomain((string) ($row['site_url'] ?? '')) === $target) {
-                $count++;
-            }
-        }
-        return $count;
+        // Rows saved before the column existed (or inserted by hand) are filled in first.
+        self::backfillRegistrableDomains($pdo);
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM entries WHERE registrable_domain = ? AND did <> ?');
+        $stmt->execute([$target, $excludeDid]);
+        return (int) $stmt->fetchColumn();
     }
 
     /**
@@ -904,8 +1165,39 @@ final class Database
         return $upd->rowCount() === 1;
     }
 
+    /** Salt from config (`ip_hash_salt` / IP_HASH_SALT); empty means the database copy is used. */
+    private static string $configuredIpSalt = '';
+
+    /**
+     * Uses a salt kept outside the database for client-IP hashes, so a leaked database doesn't
+     * let anyone brute-force the IPv4 addresses behind the stored hashes. Shorter than 32
+     * characters is ignored.
+     */
+    public static function configureIpHashSalt(string $salt): void
+    {
+        self::$configuredIpSalt = strlen($salt) >= 32 ? $salt : '';
+    }
+
+    /** True while client-IP hashes use the salt stored in the database itself. */
+    public static function ipSaltInDatabase(): bool
+    {
+        return self::$configuredIpSalt === '';
+    }
+
+    /**
+     * A stable, salted hash identifying a client (by IP) without storing the IP. Extensions use
+     * this for their own per-client limits.
+     */
+    public static function clientKeyHash(PDO $pdo, string $ip): string
+    {
+        return self::hashRateLimitKey($pdo, 'client:' . $ip);
+    }
+
     private static function rateLimitSalt(PDO $pdo): string
     {
+        if (self::$configuredIpSalt !== '') {
+            return self::$configuredIpSalt;
+        }
         $row = $pdo->query("SELECT `value` FROM settings WHERE `key` = 'rate_limit_salt'")->fetch();
         if (is_array($row) && !empty($row['value']) && is_string($row['value'])) {
             return $row['value'];
@@ -936,31 +1228,87 @@ final class Database
         return $stmt->rowCount();
     }
 
-    public static function setCandidateKey(PDO $pdo, string $did, string $publicKeyPem): void
+    /**
+     * Records a new signing key a listed site served without a rotation certificate, for the
+     * operator to review. The first such key is kept: a later, different key never replaces it
+     * (that would let whoever controls the site swap the key under review); it only sets
+     * `conflict`, which the admin page shows as a warning.
+     */
+    public static function recordCandidateKey(PDO $pdo, string $did, string $publicKeyPem, ?string $now = null): void
     {
-        $key = 'candidate_key:' . $did;
-        $now = gmdate('c');
-        $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
-        if ($driver === 'sqlite') {
-            $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, updated_at) VALUES (?, ?, ?) ON CONFLICT(`key`) DO UPDATE SET `value` = excluded.value, updated_at = excluded.updated_at');
-        } else {
-            $stmt = $pdo->prepare('INSERT INTO settings (`key`, `value`, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), updated_at = VALUES(updated_at)');
+        $fingerprint = Verify::spkiFingerprint($publicKeyPem);
+        if ($did === '' || $fingerprint === '') {
+            return;
         }
-        $stmt->execute([$key, $publicKeyPem, $now]);
+        $now ??= self::isoNow();
+        $existing = self::getCandidateKey($pdo, $did);
+        if ($existing === null) {
+            $ins = $pdo->prepare('
+                INSERT INTO key_candidates (did, public_key_pem, fingerprint, first_seen_at, last_seen_at, conflict)
+                VALUES (?, ?, ?, ?, ?, 0)
+            ');
+            $ins->execute([$did, trim($publicKeyPem), $fingerprint, $now, $now]);
+            return;
+        }
+        $conflict = $existing['fingerprint'] !== $fingerprint || $existing['conflict'];
+        $upd = $pdo->prepare('UPDATE key_candidates SET last_seen_at = ?, conflict = ? WHERE did = ?');
+        $upd->execute([$now, $conflict ? 1 : 0, $did]);
     }
 
-    public static function getCandidateKey(PDO $pdo, string $did): ?string
+    /**
+     * @return array{did: string, publicKeyPem: string, fingerprint: string, firstSeenAt: string, lastSeenAt: string, conflict: bool}|null
+     */
+    public static function getCandidateKey(PDO $pdo, string $did): ?array
     {
-        $stmt = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = ?');
-        $stmt->execute(['candidate_key:' . $did]);
+        $stmt = $pdo->prepare('SELECT * FROM key_candidates WHERE did = ?');
+        $stmt->execute([$did]);
         $row = $stmt->fetch();
-        return (is_array($row) && is_string($row['value']) && $row['value'] !== '') ? $row['value'] : null;
+        return is_array($row) ? self::candidateFromRow($row) : null;
+    }
+
+    /**
+     * Candidates for several DIDs at once (for the admin listing), keyed by DID.
+     *
+     * @param list<string> $dids
+     * @return array<string, array{did: string, publicKeyPem: string, fingerprint: string, firstSeenAt: string, lastSeenAt: string, conflict: bool}>
+     */
+    public static function getCandidateKeys(PDO $pdo, array $dids): array
+    {
+        $dids = array_values(array_unique(array_filter($dids, 'is_string')));
+        if (count($dids) === 0) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($dids), '?'));
+        $stmt = $pdo->prepare("SELECT * FROM key_candidates WHERE did IN ({$placeholders})");
+        $stmt->execute($dids);
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $candidate = self::candidateFromRow($row);
+            $out[$candidate['did']] = $candidate;
+        }
+        return $out;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array{did: string, publicKeyPem: string, fingerprint: string, firstSeenAt: string, lastSeenAt: string, conflict: bool}
+     */
+    private static function candidateFromRow(array $row): array
+    {
+        return [
+            'did' => (string) $row['did'],
+            'publicKeyPem' => (string) $row['public_key_pem'],
+            'fingerprint' => (string) $row['fingerprint'],
+            'firstSeenAt' => (string) $row['first_seen_at'],
+            'lastSeenAt' => (string) $row['last_seen_at'],
+            'conflict' => !empty($row['conflict']),
+        ];
     }
 
     public static function clearCandidateKey(PDO $pdo, string $did): void
     {
-        $stmt = $pdo->prepare('DELETE FROM settings WHERE `key` = ?');
-        $stmt->execute(['candidate_key:' . $did]);
+        $stmt = $pdo->prepare('DELETE FROM key_candidates WHERE did = ?');
+        $stmt->execute([$did]);
     }
 
     /**
@@ -998,6 +1346,21 @@ final class Database
         $upd = $pdo->prepare('UPDATE rate_limits SET hits = hits + 1 WHERE ip_key = ?');
         $upd->execute([$hashedKey]);
         return true;
+    }
+
+    /**
+     * True when `$ipKey` has already used `$maxHits` in the current window. Unlike
+     * `checkRateLimit` it doesn't count as a hit.
+     */
+    public static function isRateLimited(PDO $pdo, string $ipKey, int $windowSeconds, int $maxHits): bool
+    {
+        $stmt = $pdo->prepare('SELECT window_start, hits FROM rate_limits WHERE ip_key = ?');
+        $stmt->execute([self::hashRateLimitKey($pdo, $ipKey)]);
+        $row = $stmt->fetch();
+        if (!is_array($row) || (int) $row['window_start'] <= time() - $windowSeconds) {
+            return false;
+        }
+        return (int) $row['hits'] >= $maxHits;
     }
 
     private static function upsertRateLimit(PDO $pdo, string $ipKey, int $windowStart, int $hits): void
@@ -1063,7 +1426,7 @@ final class Database
      * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
-    public static function toAdminEntry(array $row): array
+    public static function toAdminEntry(array $row, ?array $candidate = null): array
     {
         return array_merge(self::toPublicEntry($row), [
             'status' => (string) $row['status'],
@@ -1072,7 +1435,27 @@ final class Database
             'lastCheckedAt' => (string) $row['last_checked_at'],
             'createdAt' => (string) ($row['created_at'] ?? ''),
             'keyFingerprint' => Verify::spkiFingerprint((string) ($row['public_key_pem'] ?? '')),
+            // Set while the site serves a new key that the operator hasn't reviewed yet.
+            'keyChanged' => $candidate !== null,
+            'candidateFingerprint' => $candidate['fingerprint'] ?? '',
+            'candidateFirstSeenAt' => $candidate['firstSeenAt'] ?? '',
+            'candidateConflict' => (bool) ($candidate['conflict'] ?? false),
         ]);
+    }
+
+    /**
+     * Admin rows for a page of entries, with their pending candidate keys loaded in one query.
+     *
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    public static function toAdminEntries(PDO $pdo, array $rows): array
+    {
+        $candidates = self::getCandidateKeys($pdo, array_map(static fn (array $r): string => (string) $r['did'], $rows));
+        return array_map(
+            static fn (array $r): array => self::toAdminEntry($r, $candidates[(string) $r['did']] ?? null),
+            $rows
+        );
     }
 
     /**

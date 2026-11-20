@@ -136,6 +136,9 @@ To keep listed profiles fresh and automatically mark unreachable sites as `stale
    - **Over SSH** (included on Premium plans; turn it on under hPanel → Advanced → SSH Access): `cd ~/domains/yourdomain.com/public_html && php scripts/smoke-extensions.php`
    - **Or with a one-off cron job:** add a cron job running `/usr/bin/php /home/u123456789/domains/yourdomain.com/public_html/scripts/smoke-extensions.php`. Read its output under **View output**, then delete the job.
 6. **Check** that `/api/healthz` returns `{"ok":true}` and that a search on the public page works.
+7. **Go through the [Security & operations checklist](#security--operations-checklist)**, in particular the hub URL (self-service removal is off without it) and, on MySQL, the look-alike upgrade.
+
+Developers can run every check locally: `php scripts/smoke-security-phase1.php`, `…-phase3.php`, `…-phase4.php`, `…-phase5.php`, `php scripts/smoke-extensions.php`, `php scripts/smoke-arcade.php`, and `php scripts/smoke-router.php`. The last one starts the hub with `php -S` on a throwaway database and config and tests it over HTTP.
 
 ---
 
@@ -148,11 +151,17 @@ To keep listed profiles fresh and automatically mark unreachable sites as `stale
 | Title | `HUB_TITLE` (`DIRECTORY_TITLE`) | `title` |
 | Description | `HUB_DESCRIPTION` (`DIRECTORY_DESCRIPTION`) | `description` |
 | Banner image | `HUB_BANNER_URL` (`DIRECTORY_BANNER_URL`) | `banner_url` |
-| This hub's canonical URL (enables `/.well-known/did.json`) | `HUB_URL` (`DIRECTORY_URL`) | `hub_url` / `hubUrl` (older: `directory_url` / `directoryUrl`) |
+| This hub's canonical URL (enables `/.well-known/did.json` and **self-service removal**, which is refused until it is set) | `HUB_URL` (`DIRECTORY_URL`) | `hub_url` / `hubUrl` (older: `directory_url` / `directoryUrl`) |
 | Maintainer badge on/off | `HUB_MAINTAINER_BADGE` (`DIRECTORY_MAINTAINER_BADGE`) | `maintainer_badge` |
 | Maintainer name / URL / DID | `HUB_MAINTAINER_NAME`, `HUB_MAINTAINER_URL`, `HUB_MAINTAINER_DID` (`DIRECTORY_MAINTAINER_*`) | `maintainer_name`, `maintainer_url`, `maintainer_did` |
 | Enabled extensions (comma-separated) | `HUB_EXTENSIONS` (`DIRECTORY_EXTENSIONS`) | `extensions` |
-| Admin token | `ADMIN_TOKEN` | `admin_token` |
+| Admin token (32+ characters) | `ADMIN_TOKEN` | `admin_token` |
+| Admin limits per IP: changes and failed sign-ins per 15 minutes (defaults `120` / `10`) | `ADMIN_RATE_LIMIT_MAX_WRITES` | `admin_rate_limit_max_writes`, `admin_rate_limit_max_failures`, `admin_rate_limit_window_seconds` |
+| Salt for hashing visitor IPs (32+ characters; keep it out of the database) | `IP_HASH_SALT` | `ip_hash_salt` |
+| Run schema upgrades on each request (`1` by default) | `AUTO_MIGRATE` | `auto_migrate` |
+| One time budget for verifying a site, all fetches together (default `15000` ms) | `FETCH_BUDGET_MS` | `fetch_budget_ms` |
+| Wait between public refreshes of one site, including failed ones (default `300` s) | `REFRESH_COOLDOWN_SECONDS` | `refresh_cooldown_seconds` |
+| Listings allowed per registrable domain (default `10`; uses the Public Suffix List, so each `*.github.io` site is its own domain) | `MAX_ENTRIES_PER_DOMAIN` | `max_entries_per_domain` |
 | Reverse proxy trust (`false` by default) | `TRUST_PROXY` | `trust_proxy` |
 | Trusted proxy hops from right (default `1`) | `TRUSTED_PROXY_HOPS` | `trusted_proxy_hops` |
 | Rate limiting enabled (`1` by default) | `RATE_LIMIT` | `rate_limit_enabled` |
@@ -164,7 +173,26 @@ To keep listed profiles fresh and automatically mark unreachable sites as `stale
 - When `trust_proxy` is enabled, `X-Forwarded-For` is read `trusted_proxy_hops` from the right, validated as an IP address, and falls back to `REMOTE_ADDR` if missing or invalid. `POST /api/entries` and `POST /api/entries/{did}/refresh` also enforce a global crawl cap (`global_crawl_rate_limit`).
 - Outbound site verification converts IDN hostnames to ASCII, rejects percent-encoded or non-ASCII hosts, restricts ports to `443` (or `80` only when `allow_insecure` is enabled), verifies the connected IP (`CURLINFO_PRIMARY_IP`) matches the pinned DNS IP, and returns generic fetch error messages.
 
+- Verifying a site (manifest, `did.json` and profile) shares one wall-clock budget (`fetch_budget_ms`), checked again after DNS lookups and on every redirect, so a slow site can hold a PHP worker for at most that long. A failed public refresh still starts the per-site cooldown, but doesn't count toward marking the site stale.
+- Registrable domains for the per-domain cap come from the Public Suffix List in `src/data/public_suffix_list.dat`. Refresh it now and then with `php scripts/update-psl.php` and commit the result.
+
 The instance keys can also be nested under `'instance' => [...]` in camelCase, as in the example above. Settings saved on `/admin` (or with `POST /api/admin/settings`) are stored in the `settings` table and override `config.php`.
+
+---
+
+## Security & operations checklist
+
+Do these once on every production hub. The admin page warns about the ones it can detect.
+
+- [ ] **Hide PHP details:** set `expose_php = Off` and `display_errors = Off` in `php.ini` (on Hostinger: hPanel → Advanced → PHP Configuration). The hub also removes `X-Powered-By` itself, but `display_errors` would show file paths if anything ever goes wrong.
+- [ ] **Set the hub URL** (`hub_url` / `HUB_URL`, or on `/admin`). Signed removal requests name the hub they're meant for, and the hub refuses them (`503 hub_url_not_configured`) until it knows its own URL. That stops another hub replaying a site's removal here.
+- [ ] **Admin token:** at least 32 characters, from `openssl rand -hex 32`. Shorter tokens are refused.
+- [ ] **IP hash salt:** set `IP_HASH_SALT` (or `ip_hash_salt`) to another `openssl rand -hex 32` value. Without it the salt is kept in the database, so a database leak would let someone recover visitors' IPv4 addresses from the rate-limit hashes.
+- [ ] **HTTPS only:** the hub sends `Strict-Transport-Security` on HTTPS responses (and `public/.htaccess` adds it to static files when `mod_headers` is available). Check with `curl -sI https://your-hub/`.
+- [ ] **Cron:** schedule `scripts/refresh.php` (see step 4). It has its own lock and time budget, so overlapping runs exit cleanly. It also rescans extension folders such as the arcade's games.
+- [ ] **Schema upgrades:** leave `auto_migrate` on while you upgrade, open `/admin` once and check it shows no **Database maintenance needed** notice, then set it to `false`. A failed upgrade is shown there with a **Retry upgrades** button instead of being retried on every request.
+- [ ] **MySQL installs created before phase 4:** the `2026_11_collation_bin` upgrade switches `site_url` and `did` to a byte-exact collation so look-alike URLs (`Example.com` vs `example.com`) can't match each other. If the database already holds such look-alikes, the upgrade stops and `/admin` lists them; delete the duplicates you don't want, then click **Retry upgrades**.
+- [ ] **Remove stray files:** no backup or copy of `config.php` (such as `config.example copy.php`) should be on the server. `.htaccess` blocks the common names, but don't rely on it.
 
 ---
 
@@ -181,14 +209,15 @@ What you can do there:
   - **Block** hides the site from the public listing and API, stops re-checks, and refuses re-submission. **Unblock** makes it active again.
   - **Mark stale** hides the site until its next successful refresh (the cron job does this by itself after 7 failed checks). **Mark active** shows it again.
   - **Refresh now** fetches and verifies the site again (`POST /api/entries/:did/refresh`, which counts toward the write rate limit).
-  - **Trust new key** accepts the key the site publishes now when it changed without a rotation certificate. **Only do this after confirming the change with the site owner** some other way; otherwise whoever controls the domain now gets the listing.
+  - **Review new key** appears only on rows marked **Key changed**: the site started serving a different signing key without a rotation certificate, and the hub kept the old one. The dialog shows the pinned key's and the new key's full fingerprints and when the new key was first seen. **Read the new fingerprint to the site owner through another channel and only trust it if they confirm it**; otherwise whoever controls the domain now gets the listing. The hub remembers the *first* new key it saw: if the site later serves yet another key, the row also shows **Multiple new keys seen**, which is a strong sign of a takeover attempt. Trusting is refused if the site no longer serves the exact key you reviewed.
   - **Delete** removes the entry and any extension data for it. The owner can list it again; block it instead to keep it out.
 - **Add a site** verifies and lists a site by URL, like the public form.
 - **Re-check due sites** re-verifies up to 25 of the sites checked longest ago (`POST /api/admin/refresh`).
 - **Instance settings**: title, description, banner, hub URL and maintainer badge. Only changed fields are saved.
 - **Extensions**: every enabled extension, loaded or not, with its version, schema, routes, events and load errors.
+- **Notices** at the top of the page: a missing hub URL (self-service removal is off until it's set), failed schema upgrades or look-alike listings that need cleaning up (with **Retry upgrades**), and an IP salt kept in the database.
 
-Each action shows its result or error next to it.
+Each action shows its result or error next to it. Failed sign-ins are limited per IP (10 per 15 minutes by default); after that even the right token is refused until the window passes.
 
 ---
 
@@ -225,15 +254,17 @@ When `maintainerBadge` is `true` and the maintainer's site (`maintainerUrl` / `m
 | `GET /api/entries?q=&limit=24&offset=0` | Search or list active verified entries |
 | `GET /api/entries/:did` | Fetch a single active entry by DID |
 | `POST /api/entries` | Verify and index a site (`{"siteUrl":"https://alice.example"}`) |
-| `POST /api/entries/:did/refresh` | Re-crawl and re-verify an existing entry |
+| `POST /api/entries/:did/refresh` | Re-crawl and re-verify an existing entry. At most once per `refresh_cooldown_seconds` per site, failed attempts included: `429 refresh_cooldown` with `retryAfterSeconds` and a `Retry-After` header |
 | `GET /api/nonce` | Issue a single-use nonce for self-service removal (15-minute TTL) |
-| `POST /api/entries/:did/remove` | Remove an entry using a payload signed by the site's Ed25519 private key |
+| `POST /api/entries/:did/remove` | Remove an entry using a payload signed by the site's Ed25519 private key. The signed payload names this hub (`hubUrl`); returns `503 hub_url_not_configured` until the hub URL is set |
 | `GET /admin` | Operator page (see [Admin page](#admin-page-admin)); it calls the endpoints below |
-| `GET /api/admin/entries?status=&q=&limit=50&offset=0` | Every entry, any status. `status`: `active`, `blocked` or `stale` (optional); `q`: case-insensitive match on name, handle, site URL or DID; `limit` up to 100. Returns `{ total, entries }`; each entry is the public shape plus `status`, `failCount`, `lastError`, `lastCheckedAt`, `createdAt` and `keyFingerprint` (SHA-256 of the SPKI key) *(Bearer `admin_token`)* |
+| `GET /api/admin/entries?status=&q=&limit=50&offset=0` | Every entry, any status. `status`: `active`, `blocked` or `stale` (optional); `q`: case-insensitive match on name, handle, site URL or DID; `limit` up to 100. Returns `{ total, entries }`; each entry is the public shape plus `status`, `failCount`, `lastError`, `lastCheckedAt`, `createdAt`, `keyFingerprint` (SHA-256 of the SPKI key), and while a new key awaits review `keyChanged: true`, `candidateFingerprint`, `candidateFirstSeenAt` and `candidateConflict` *(Bearer `admin_token`)* |
+| `GET /api/admin/status` | Operator warnings: `hubUrlConfigured`, `ipSaltInDatabase`, and `maintenance` (`migrationErrors`, `collationConflicts`) *(Bearer `admin_token`)* |
+| `POST /api/admin/migrations/retry` | Run pending schema upgrades and re-run ones that failed *(Bearer `admin_token`)* |
 | `POST /api/admin/settings` | Update instance customization settings *(Bearer `admin_token`)* |
 | `POST /api/admin/refresh` | Trigger a batch refresh of due entries (`{"limit":10}`, up to 25) *(Bearer `admin_token`)* |
 | `POST /api/admin/entries/:did/status` | Set entry status to `active`, `blocked`, or `stale` *(Bearer `admin_token`)* |
-| `POST /api/admin/entries/:did/trust-key` | Re-verify a site and accept its new signing key when it changed without a rotation certificate. Confirm the change with the owner first *(Bearer `admin_token`)* |
+| `POST /api/admin/entries/:did/trust-key` | Accept the new signing key recorded when the site's key changed without a rotation certificate. Body: `{"expectedFingerprint":"<candidateFingerprint you reviewed>"}`. Refused with `400` without it, `409 no_candidate` when no new key is waiting, `409 candidate_mismatch` when it names a different key, and `409 served_key_changed` when the site no longer serves that key. Confirm the fingerprint with the owner first *(Bearer `admin_token`)* |
 | `DELETE /api/admin/entries/:did` | Delete an entry immediately *(Bearer `admin_token`)* |
 | `GET /api/admin/extensions` | Enabled extensions: loaded or not, version, schema version, routes, events, load errors *(Bearer `admin_token`)* |
 | `GET /api/ext/key-witness/v1/keys/:did` | *(key-witness extension)* The current key fingerprint for an active entry and the history of keys seen (`first-seen`, `rotated`, `operator-accepted`, `rejected`) |

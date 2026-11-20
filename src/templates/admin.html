@@ -58,6 +58,36 @@
         </p>
       </section>
 
+      <div id="admin-notices" class="admin-notices" aria-live="polite" hidden></div>
+
+      <dialog id="key-dialog" class="admin-dialog" aria-labelledby="key-dialog-title">
+        <form method="dialog" id="key-dialog-form">
+          <h2 id="key-dialog-title">Review the new signing key</h2>
+          <p class="admin-dialog-site"><strong id="key-dialog-site"></strong><br /><code id="key-dialog-did" class="admin-mono"></code></p>
+          <dl class="admin-fp-compare">
+            <dt>Pinned key (trusted now)</dt>
+            <dd><code id="key-dialog-pinned" class="admin-fp-full"></code></dd>
+            <dt>New key <span id="key-dialog-first-seen" class="admin-sub"></span></dt>
+            <dd><code id="key-dialog-candidate" class="admin-fp-full"></code></dd>
+          </dl>
+          <p id="key-dialog-conflict" class="admin-callout admin-callout-error" hidden>
+            This site has served more than one new key since it was first flagged. That can mean
+            someone is trying to take over the listing. Don't trust it unless the site owner
+            confirms this exact fingerprint.
+          </p>
+          <p class="admin-callout">
+            Confirm this fingerprint with the site owner through another channel (not the site
+            itself) before trusting it. Trusting a key you haven't confirmed can hand the listing,
+            and its signed self-removal, to whoever controls the domain now.
+          </p>
+          <p id="key-dialog-message" class="form-message" role="status" aria-live="polite"></p>
+          <div class="admin-dialog-actions">
+            <button type="submit" value="cancel" class="admin-button" autofocus>Cancel</button>
+            <button type="button" id="key-dialog-trust" class="admin-button admin-button-danger">Trust this key</button>
+          </div>
+        </form>
+      </dialog>
+
       <div id="admin-area" class="layout admin-layout" hidden>
         <section class="admin-listings" aria-labelledby="listings-heading">
           <h2 id="listings-heading" class="section-title">
@@ -143,7 +173,7 @@
               <textarea id="set-description" class="admin-textarea" name="description" rows="3" maxlength="600"></textarea>
               <label for="set-banner">Banner image URL</label>
               <input id="set-banner" name="bannerUrl" type="text" placeholder="https://… or /banner.jpg" />
-              <label for="set-hub-url">Hub URL (enables did.json)</label>
+              <label for="set-hub-url">Hub URL (enables did.json and self-service removal)</label>
               <input id="set-hub-url" name="directoryUrl" type="url" placeholder="https://hub.example.com" />
               <label class="admin-check" for="set-badge">
                 <input id="set-badge" name="maintainerBadge" type="checkbox" />

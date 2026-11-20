@@ -18,6 +18,11 @@
       </div>
     </header>
 
+    <p class="trust-banner" role="note">
+      <strong>Leaderboards are for fun.</strong> Scores are reported by players' browsers and are
+      not checked, and anyone can play under any listed DID. A score is not proof of who played.
+    </p>
+
     <section class="panel" aria-label="Player Identity">
       <div class="player-bar">
         <label for="did-input"><strong>Player DID:</strong></label>
@@ -74,7 +79,13 @@
         </div>
       </div>
 
-      <h3 style="margin-top: 1.5rem;">Leaderboard</h3>
+      <div class="leaderboard-head">
+        <h3>Leaderboard</h3>
+        <label class="filter-toggle" for="verified-only">
+          <input id="verified-only" type="checkbox" />
+          Verified only
+        </label>
+      </div>
       <table>
         <thead>
           <tr>

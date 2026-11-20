@@ -25,6 +25,21 @@ final class ArcadeExtension implements Extension
     private array $scanErrors = [];
     private bool $catalogSynced = false;
 
+    /** @var array<string, int>|null play counts per game, loaded in one query per request */
+    private ?array $playCounts = null;
+
+    /**
+     * @return array<string, int>
+     */
+    private function countPlaysBySlug(): array
+    {
+        $counts = [];
+        foreach ($this->ctx->pdo()->query("SELECT game_slug, COUNT(*) AS n FROM {$this->tPlays} GROUP BY game_slug")->fetchAll() as $r) {
+            $counts[(string) $r['game_slug']] = (int) $r['n'];
+        }
+        return $counts;
+    }
+
     public function register(ExtensionContext $ctx): void
     {
         $this->ctx = $ctx;
@@ -37,10 +52,23 @@ final class ArcadeExtension implements Extension
         $ctx->migrate(1, function (PDO $pdo, string $driver): void {
             $this->createTables($pdo, $driver);
         });
+        // v2: rate-limit rows record the DID they belong to, so removing a player deletes exactly
+        // their rows (instead of a LIKE pattern in which `_` and `%` in a DID act as wildcards).
+        $ctx->migrate(2, function (PDO $pdo, string $driver): void {
+            if ($driver === 'sqlite') {
+                $pdo->exec("ALTER TABLE {$this->tLimits} ADD COLUMN did TEXT NOT NULL DEFAULT ''");
+                $pdo->exec("CREATE INDEX IF NOT EXISTS idx_{$this->tLimits}_did ON {$this->tLimits}(did)");
+            } else {
+                $pdo->exec("ALTER TABLE {$this->tLimits} ADD COLUMN did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '', ADD KEY idx_limits_did (did)");
+            }
+        });
 
         // Serve arcade UI (/ext/arcade/) and isolated games (/ext/arcade/games/<slug>/)
         $arcadePageCsp = "default-src 'self'; img-src 'self' https: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
-        $gameCsp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+        // `sandbox` puts every game page on an opaque origin even when it is opened directly
+        // instead of inside the arcade's sandboxed iframe, so a game can never read the hub's
+        // storage (such as the admin token) or call its APIs with the visitor's session.
+        $gameCsp = "sandbox allow-scripts allow-pointer-lock; default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
 
         if (is_dir($ctx->dir . '/public')) {
             $ctx->serveFiles('', 'public', [
@@ -57,7 +85,12 @@ final class ArcadeExtension implements Extension
         }
 
         $ctx->on('entry.removed', fn (array $e) => $this->purgePlayer((string) ($e['did'] ?? '')));
-        $ctx->on('cron.refresh', fn () => $this->pruneExpiredAndCapped());
+        $ctx->on('cron.refresh', function (): void {
+            // The games folder is rescanned here and from the admin routes, never on public
+            // requests, so anonymous visitors can't make the hub write to its database.
+            $this->syncCatalog(true);
+            $this->pruneExpiredAndCapped();
+        });
 
         $ctx->get('v1/games', fn (array $p, ExtensionRequest $req) => $this->listGames($req));
         $ctx->get('v1/games/{slug}', fn (array $p) => $this->getGame($p['slug']));
@@ -77,6 +110,24 @@ final class ArcadeExtension implements Extension
         $cfg = $this->ctx->config();
         $val = isset($cfg[$key]) && is_numeric($cfg[$key]) ? (int) $cfg[$key] : $default;
         return min(max($val, $min), $max);
+    }
+
+    /**
+     * Public requests only read the catalog. It is filled from the games folder on the first
+     * request after install (when the table is still empty), and kept current by the cron
+     * refresh and the admin routes, which call `syncCatalog`. So anonymous traffic never writes
+     * to the database on reads.
+     */
+    private function ensureCatalog(): void
+    {
+        if ($this->catalogSynced) {
+            return;
+        }
+        $hasRows = $this->ctx->pdo()->query("SELECT 1 FROM {$this->tGames} LIMIT 1")->fetchColumn();
+        if ($hasRows === false) {
+            $this->syncCatalog();
+        }
+        $this->catalogSynced = true;
     }
 
     /**
@@ -336,7 +387,7 @@ final class ArcadeExtension implements Extension
      */
     private function listGames(ExtensionRequest $req): array
     {
-        $this->syncCatalog();
+        $this->ensureCatalog();
         $pdo = $this->ctx->pdo();
         $q = strtolower(trim((string) ($req->query['q'] ?? '')));
         $tag = strtolower(trim((string) ($req->query['tag'] ?? '')));
@@ -344,6 +395,7 @@ final class ArcadeExtension implements Extension
         $offset = max((int) ($req->query['offset'] ?? 0), 0);
 
         $rows = $pdo->query("SELECT * FROM {$this->tGames} WHERE present = 1 AND enabled = 1 ORDER BY title ASC")->fetchAll();
+        $this->playCounts = $this->countPlaysBySlug();
         $filtered = [];
         foreach ($rows as $row) {
             $manifest = json_decode((string) $row['manifest_json'], true) ?: [];
@@ -373,10 +425,10 @@ final class ArcadeExtension implements Extension
     private function formatGameSummary(array $row, array $manifest): array
     {
         $slug = (string) $row['slug'];
-        $pdo = $this->ctx->pdo();
-        $playsStmt = $pdo->prepare("SELECT COUNT(*) FROM {$this->tPlays} WHERE game_slug = ?");
-        $playsStmt->execute([$slug]);
-        $playCount = (int) $playsStmt->fetchColumn();
+        if ($this->playCounts === null) {
+            $this->playCounts = $this->countPlaysBySlug();
+        }
+        $playCount = $this->playCounts[$slug] ?? 0;
 
         $topLeader = $this->queryLeaderboard($slug, (string) ($manifest['score']['direction'] ?? 'higher'), 1, 0);
 
@@ -408,7 +460,7 @@ final class ArcadeExtension implements Extension
      */
     private function getGame(string $slug): array
     {
-        $this->syncCatalog();
+        $this->ensureCatalog();
         $row = $this->requireActiveGameRow($slug);
         $manifest = json_decode((string) $row['manifest_json'], true) ?: [];
         $limit = $this->settingInt('leaderboard_limit', 25, 1, 100);
@@ -425,7 +477,7 @@ final class ArcadeExtension implements Extension
      */
     private function getLeaderboard(string $slug, ExtensionRequest $req): array
     {
-        $this->syncCatalog();
+        $this->ensureCatalog();
         $row = $this->requireActiveGameRow($slug);
         $manifest = json_decode((string) $row['manifest_json'], true) ?: [];
         $defaultLimit = $this->settingInt('leaderboard_limit', 25, 1, 100);
@@ -504,15 +556,22 @@ final class ArcadeExtension implements Extension
      */
     private function createSession(string $slug, ExtensionRequest $req): array
     {
-        $this->syncCatalog();
+        $this->ensureCatalog();
         $this->requireActiveGameRow($slug);
         $body = $req->json();
         $did = trim((string) ($body['did'] ?? ''));
         $this->requireActivePlayer($did);
 
+        // Scores are self-reported, so limits are per client: per (client, DID) so nobody can use up
+        // another player's quota, and per client overall so one visitor can't flood the boards.
+        $client = $req->clientKey !== '' ? $req->clientKey : 'unknown';
         $maxPerHour = $this->settingInt('max_sessions_per_did_hour', 60, 1, 1000);
-        if (!$this->checkDidRateLimit('session:' . $did, 3600, $maxPerHour)) {
-            throw new AppError(429, 'rate_limited', 'Too many game sessions started recently. Try again later.');
+        $maxPerClient = $this->settingInt('max_sessions_per_ip_hour', 120, 1, 10000);
+        if (
+            !$this->checkLimit('session:pair:' . hash('sha256', $client . '|' . $did), 3600, $maxPerHour, $did)
+            || !$this->checkLimit('session:client:' . $client, 3600, $maxPerClient)
+        ) {
+            throw new AppError(429, 'rate_limited', "You're starting games too quickly. Try again in a few minutes.");
         }
 
         $ttl = $this->settingInt('session_ttl_seconds', 7200, 60, 86400);
@@ -541,7 +600,7 @@ final class ArcadeExtension implements Extension
      */
     private function submitScore(string $slug, ExtensionRequest $req): array
     {
-        $this->syncCatalog();
+        $this->ensureCatalog();
         $gameRow = $this->requireActiveGameRow($slug);
         $manifest = json_decode((string) $gameRow['manifest_json'], true) ?: [];
         $scoreCfg = is_array($manifest['score'] ?? null) ? $manifest['score'] : [];
@@ -591,9 +650,14 @@ final class ArcadeExtension implements Extension
             $metaJson = $encoded;
         }
 
+        $client = $req->clientKey !== '' ? $req->clientKey : 'unknown';
         $maxScoresHour = $this->settingInt('max_scores_per_did_hour', 60, 1, 1000);
-        if (!$this->checkDidRateLimit('score:' . $did, 3600, $maxScoresHour)) {
-            throw new AppError(429, 'rate_limited', 'Too many scores submitted recently. Try again later.');
+        $maxScoresClient = $this->settingInt('max_scores_per_ip_hour', 300, 1, 10000);
+        if (
+            !$this->checkLimit('score:pair:' . hash('sha256', $client . '|' . $did), 3600, $maxScoresHour, $did)
+            || !$this->checkLimit('score:client:' . $client, 3600, $maxScoresClient)
+        ) {
+            throw new AppError(429, 'rate_limited', "You're submitting scores too quickly. Try again in a few minutes.");
         }
 
         $pdo = $this->ctx->pdo();
@@ -672,6 +736,9 @@ final class ArcadeExtension implements Extension
 
         return [
             'accepted' => true,
+            // Scores are reported by the player's browser and never checked, so they are always
+            // unverified. The leaderboard labels them that way.
+            'verified' => false,
             'isPersonalBest' => $isPersonalBest,
             'best' => $bestScore,
             'rank' => $rank,
@@ -683,7 +750,7 @@ final class ArcadeExtension implements Extension
      */
     private function getPlayerHistory(string $did, ExtensionRequest $req): array
     {
-        $this->syncCatalog();
+        $this->ensureCatalog();
         $entry = $this->requireActivePlayer($did);
         $limit = min(max((int) ($req->query['limit'] ?? 25), 1), 100);
         $offset = max((int) ($req->query['offset'] ?? 0), 0);
@@ -846,8 +913,10 @@ final class ArcadeExtension implements Extension
         $p->execute([$did]);
         $se = $pdo->prepare("DELETE FROM {$this->tSessions} WHERE did = ?");
         $se->execute([$did]);
-        $li = $pdo->prepare("DELETE FROM {$this->tLimits} WHERE rate_key LIKE ?");
-        $li->execute(['%:' . $did]);
+        // Exact matches only: rows written since schema v2 carry the DID; older rows used the keys
+        // `session:<did>` and `score:<did>`.
+        $li = $pdo->prepare("DELETE FROM {$this->tLimits} WHERE did = ? OR rate_key IN (?, ?)");
+        $li->execute([$did, 'session:' . $did, 'score:' . $did]);
         return [
             'scores' => $s->rowCount(),
             'plays' => $p->rowCount(),
@@ -893,7 +962,11 @@ final class ArcadeExtension implements Extension
         $delLimits->execute([time() - 7200]);
     }
 
-    private function checkDidRateLimit(string $rateKey, int $windowSec, int $maxHits): bool
+    /**
+     * Fixed-window counter in the extension's own table. `$did` is recorded on the row (when the
+     * key concerns one player) so `purgePlayer` can delete exactly that player's rows.
+     */
+    private function checkLimit(string $rateKey, int $windowSec, int $maxHits, string $did = ''): bool
     {
         $pdo = $this->ctx->pdo();
         $now = time();
@@ -905,16 +978,16 @@ final class ArcadeExtension implements Extension
         if (!is_array($row) || (int) $row['window_start'] <= $cutoff) {
             if ($this->ctx->driver() === 'sqlite') {
                 $ins = $pdo->prepare("
-                    INSERT INTO {$this->tLimits} (rate_key, window_start, hits) VALUES (?, ?, 1)
-                    ON CONFLICT(rate_key) DO UPDATE SET window_start = excluded.window_start, hits = 1
+                    INSERT INTO {$this->tLimits} (rate_key, window_start, hits, did) VALUES (?, ?, 1, ?)
+                    ON CONFLICT(rate_key) DO UPDATE SET window_start = excluded.window_start, hits = 1, did = excluded.did
                 ");
             } else {
                 $ins = $pdo->prepare("
-                    INSERT INTO {$this->tLimits} (rate_key, window_start, hits) VALUES (?, ?, 1)
-                    ON DUPLICATE KEY UPDATE window_start = VALUES(window_start), hits = 1
+                    INSERT INTO {$this->tLimits} (rate_key, window_start, hits, did) VALUES (?, ?, 1, ?)
+                    ON DUPLICATE KEY UPDATE window_start = VALUES(window_start), hits = 1, did = VALUES(did)
                 ");
             }
-            $ins->execute([$rateKey, $now]);
+            $ins->execute([$rateKey, $now, $did]);
             return true;
         }
 

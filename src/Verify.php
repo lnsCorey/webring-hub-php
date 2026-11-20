@@ -72,8 +72,37 @@ final class Verify
         if ($path === '') {
             $path = '/';
         }
+        if (!self::isCanonicalPath($path)) {
+            return '';
+        }
         $href = "{$scheme}://{$authority}{$path}";
         return rtrim($href, '/');
+    }
+
+    /**
+     * A site path has exactly one spelling, so one site can't be listed twice under paths that
+     * mean the same thing (`/x`, `//x`, `/a/../x`, `/%78`), which would also give one did:web
+     * two site URLs. Rejects empty segments (other than a single trailing slash), `.` and `..`
+     * segments, percent-encoding and any character outside unreserved URL characters.
+     */
+    private static function isCanonicalPath(string $path): bool
+    {
+        if ($path === '/') {
+            return true;
+        }
+        if (!preg_match('#^/[A-Za-z0-9._~/-]*$#', $path)) {
+            return false;
+        }
+        $trimmed = substr($path, 1);
+        if (str_ends_with($trimmed, '/')) {
+            $trimmed = substr($trimmed, 0, -1);
+        }
+        foreach (explode('/', $trimmed) as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** Converts an HTTP(S) site URL into a did:web identifier, matching Webring Studio. */
@@ -280,16 +309,19 @@ final class Verify
         string $siteUrl,
         array $certificates
     ): bool {
+        // Keys are compared by SPKI fingerprint, so a certificate whose PEM is wrapped or
+        // line-broken differently from the pinned copy still links the chain.
         $current = trim($pinnedPem);
-        $target = trim($targetPem);
-        if ($current === '' || $target === '') {
+        $currentFp = self::spkiFingerprint($current);
+        $targetFp = self::spkiFingerprint($targetPem);
+        if ($currentFp === '' || $targetFp === '') {
             return false;
         }
-        if ($current === $target) {
+        if ($currentFp === $targetFp) {
             return true;
         }
         $expectedSite = self::normalizeSiteUrl($siteUrl);
-        $visited = [$current => true];
+        $visited = [$currentFp => true];
         $maxHops = min(count($certificates), 10);
 
         for ($hop = 0; $hop < $maxHops; $hop++) {
@@ -301,9 +333,10 @@ final class Verify
                 if (($cert->type ?? '') !== 'webring-key-rotation') {
                     continue;
                 }
-                $old = is_string($cert->oldPublicKeyPem ?? null) ? trim($cert->oldPublicKeyPem) : '';
+                $oldFp = is_string($cert->oldPublicKeyPem ?? null) ? self::spkiFingerprint($cert->oldPublicKeyPem) : '';
                 $new = is_string($cert->newPublicKeyPem ?? null) ? trim($cert->newPublicKeyPem) : '';
-                if ($old !== $current || $new === '' || isset($visited[$new])) {
+                $newFp = $new !== '' ? self::spkiFingerprint($new) : '';
+                if ($oldFp === '' || $oldFp !== $currentFp || $newFp === '' || isset($visited[$newFp])) {
                     continue;
                 }
                 if (($cert->did ?? '') !== $did) {
@@ -322,8 +355,9 @@ final class Verify
                 return false;
             }
             $current = $next;
-            $visited[$current] = true;
-            if ($current === $target) {
+            $currentFp = self::spkiFingerprint($current);
+            $visited[$currentFp] = true;
+            if ($currentFp === $targetFp) {
                 return true;
             }
         }

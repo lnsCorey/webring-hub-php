@@ -17,6 +17,13 @@ final class Config
         $root = dirname(__DIR__);
         $configFile = $root . '/config.php';
         $exampleFile = $root . '/config.example.php';
+        // WEBRING_HUB_CONFIG points at a different config file (used by scripts/smoke-router.php
+        // so its throwaway server never reads the real config.php). Set only by the operator's
+        // environment, never by a request.
+        $override = getenv('WEBRING_HUB_CONFIG');
+        if (is_string($override) && $override !== '' && is_file($override)) {
+            $configFile = $override;
+        }
 
         $base = [];
         if (is_file($configFile)) {
@@ -81,6 +88,17 @@ final class Config
             'window_seconds' => max(1, (int) ($globalCrawlSub['window_seconds'] ?? $cfg['global_crawl_rate_limit_window_seconds'] ?? 60)),
             'max' => max(1, (int) ($globalCrawlSub['max'] ?? $cfg['global_crawl_rate_limit_max'] ?? 20)),
         ];
+
+        $adminRateSub = is_array($cfg['admin_rate_limit'] ?? null) ? $cfg['admin_rate_limit'] : [];
+        $cfg['admin_rate_limit'] = [
+            'window_seconds' => max(60, (int) ($adminRateSub['window_seconds'] ?? $cfg['admin_rate_limit_window_seconds'] ?? 900)),
+            // Mutating admin requests (POST/DELETE) allowed per window; reads don't count.
+            'max_writes' => max(10, (int) ($adminRateSub['max_writes'] ?? $cfg['admin_rate_limit_max_writes'] ?? 120)),
+            // Failed sign-in attempts allowed per window.
+            'max_failures' => max(3, (int) ($adminRateSub['max_failures'] ?? $cfg['admin_rate_limit_max_failures'] ?? 10)),
+        ];
+
+        $cfg['ip_hash_salt'] = (string) ($cfg['ip_hash_salt'] ?? self::env('IP_HASH_SALT'));
 
         $cfg['trusted_proxy_hops'] = max(1, (int) ($cfg['trusted_proxy_hops'] ?? 1));
         $cfg['allow_private_hosts'] = (bool) ($cfg['allow_private_hosts'] ?? $cfg['allow_private'] ?? false);

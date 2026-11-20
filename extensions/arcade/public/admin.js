@@ -2,7 +2,8 @@
   'use strict';
 
   const API_BASE = '../../api/ext/arcade/v1/admin';
-  const TOKEN_KEY = 'webring_hub_admin_token';
+  // Same key as the hub's own admin page, so one sign-in covers both and signing out clears both.
+  const TOKEN_KEY = 'webring-hub-admin-token';
   const el = (id) => document.getElementById(id);
 
   function make(tag, className, text) {

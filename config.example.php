@@ -27,12 +27,23 @@ return [
     // Optional SQLite path (only used when db_driver === 'sqlite')
     'sqlite_path' => getenv('DATABASE_PATH') ?: __DIR__ . '/data/directory.sqlite',
 
-    // Automatically create tables on first request if they do not exist yet
-    'auto_migrate' => true,
+    // Create tables and run schema upgrades on each request. Leave true for the first install
+    // and for upgrades, then set it to false (run upgrades by setting it back to true briefly).
+    'auto_migrate' => (getenv('AUTO_MIGRATE') ?: '1') !== '0',
 
-    // Long random token for /admin and the /api/admin/* endpoints (leave empty to disable admin)
-    // Generate one with: openssl rand -hex 32
+    // Long random token for /admin and the /api/admin/* endpoints (leave empty to disable admin).
+    // Must be at least 32 characters. Generate one with: openssl rand -hex 32
     'admin_token' => getenv('ADMIN_TOKEN') ?: '',
+
+    // Admin API limits per client IP: mutating requests (POST/DELETE) and failed sign-ins per window.
+    'admin_rate_limit_window_seconds' => 900,
+    'admin_rate_limit_max_writes' => (int) (getenv('ADMIN_RATE_LIMIT_MAX_WRITES') ?: 120),
+    'admin_rate_limit_max_failures' => 10,
+
+    // Secret salt for hashing visitor IPs in rate-limit rows (at least 32 characters). Keep it out
+    // of the database so a database leak can't be used to recover IPs. Generate with:
+    // openssl rand -hex 32. When empty, a salt stored in the database is used instead.
+    'ip_hash_salt' => getenv('IP_HASH_SALT') ?: '',
 
     // Reverse proxy / rate limiting
     'trust_proxy' => (getenv('TRUST_PROXY') ?: '0') === '1',

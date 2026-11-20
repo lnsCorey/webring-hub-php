@@ -260,12 +260,15 @@ final class ExtensionRequest
     /**
      * @param array<string, mixed> $query
      * @param callable(): array<string, mixed> $readBody
+     * @param string $clientKey a salted hash identifying the caller's IP (never the IP itself),
+     *                          for per-client limits; '' when unknown
      */
     public function __construct(
         public readonly string $method,
         public readonly string $path,
         public readonly array $query,
-        private $readBody
+        private $readBody,
+        public readonly string $clientKey = ''
     ) {
     }
 

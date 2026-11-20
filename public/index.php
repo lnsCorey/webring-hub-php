@@ -21,7 +21,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const NONCE_TTL_SEC = 15 * 60;
 const MAX_CLOCK_SKEW_SEC = 10 * 60;
 
-const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' https: http: data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 const STATIC_ASSETS = [
     '/app.js' => ['app.js', 'text/javascript; charset=utf-8'],
@@ -33,8 +33,28 @@ const STATIC_ASSETS = [
     '/logo-mark.png' => ['logo-mark.png', 'image/png'],
 ];
 
+/**
+ * True when the visitor reached the hub over HTTPS, directly or through a TLS-terminating proxy or
+ * CDN. Only used to decide whether to send HSTS, which browsers ignore on plain HTTP anyway, so a
+ * spoofed X-Forwarded-Proto can't do harm here.
+ */
+function isHttpsRequest(): bool
+{
+    $https = strtolower((string) ($_SERVER['HTTPS'] ?? ''));
+    if ($https !== '' && $https !== 'off') {
+        return true;
+    }
+    return strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+}
+
 function setCommonHeaders(bool $frameable = false): void
 {
+    if (function_exists('header_remove')) {
+        header_remove('X-Powered-By');
+    }
+    if (isHttpsRequest()) {
+        header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+    }
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: no-referrer');
     if (!$frameable) {
@@ -116,10 +136,14 @@ function sendError(\Throwable $err): never
     if ($appError->status >= 500) {
         error_log('[webring-hub-php] ' . $appError->errorCode . ': ' . ($appError->details ?: $appError->getMessage()));
     }
-    sendJson($appError->status, [
+    $extraHeaders = [];
+    if (isset($appError->extra['retryAfterSeconds'])) {
+        $extraHeaders['Retry-After'] = (string) (int) $appError->extra['retryAfterSeconds'];
+    }
+    sendJson($appError->status, array_merge($appError->extra, [
         'error' => $appError->errorCode,
         'message' => $appError->getMessage(),
-    ]);
+    ]), $extraHeaders);
 }
 
 /**
@@ -164,21 +188,37 @@ function getAuthorizationHeader(): string
     return '';
 }
 
-function requireAdmin(string $adminToken, ?PDO $pdo = null, bool $trustProxy = false, int $trustedProxyHops = 1): void
+/**
+ * Checks the admin Bearer token. Failed attempts are limited per client IP (and an IP over the
+ * limit is refused before its token is even compared), and mutating requests (POST/DELETE) are
+ * limited per window. Successful reads don't count, so browsing the admin page can't lock the
+ * operator out.
+ *
+ * @param array{window_seconds?: int, max_writes?: int, max_failures?: int} $limits
+ */
+function requireAdmin(string $adminToken, ?PDO $pdo = null, bool $trustProxy = false, int $trustedProxyHops = 1, array $limits = []): void
 {
     if (strlen($adminToken) < 32) {
         throw new AppError(503, 'admin_disabled', 'Admin access is not configured.');
     }
+    $window = max(60, (int) ($limits['window_seconds'] ?? 900));
+    $maxFailures = max(3, (int) ($limits['max_failures'] ?? 10));
+    $maxWrites = max(10, (int) ($limits['max_writes'] ?? 120));
     $ip = clientIp($trustProxy, $trustedProxyHops);
-    if ($pdo !== null && !Database::checkRateLimit($pdo, 'admin_auth:' . $ip, 900, 60)) {
-        throw new AppError(429, 'rate_limited', 'Too many admin requests. Try again later.');
+    if ($pdo !== null && Database::isRateLimited($pdo, 'admin_auth_fail:' . $ip, $window, $maxFailures)) {
+        throw new AppError(429, 'rate_limited', 'Too many failed admin sign-in attempts. Try again later.');
     }
     $header = getAuthorizationHeader();
     if (!preg_match('/^Bearer\s+(.+)$/', $header, $matches) || !hash_equals($adminToken, $matches[1])) {
-        if ($pdo !== null && !Database::checkRateLimit($pdo, 'admin_auth_fail:' . $ip, 900, 10)) {
-            throw new AppError(429, 'rate_limited', 'Too many failed admin login attempts. Try again later.');
+        if ($pdo !== null && !Database::checkRateLimit($pdo, 'admin_auth_fail:' . $ip, $window, $maxFailures)) {
+            throw new AppError(429, 'rate_limited', 'Too many failed admin sign-in attempts. Try again later.');
         }
         throw new AppError(401, 'unauthorized', 'A valid admin token is required.');
+    }
+    $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    if ($pdo !== null && ($method === 'POST' || $method === 'DELETE')
+        && !Database::checkRateLimit($pdo, 'admin_write:' . $ip, $window, $maxWrites)) {
+        throw new AppError(429, 'rate_limited', 'Too many admin changes in a short time. Try again in a few minutes.');
     }
 }
 
@@ -323,6 +363,7 @@ try {
     $refreshCooldownSec = max(0, (int) ($config['refresh_cooldown_seconds'] ?? 300));
     $maxEntriesPerDomain = max(1, (int) ($config['max_entries_per_domain'] ?? 10));
     $adminToken = (string) ($config['admin_token'] ?? '');
+    $adminLimits = is_array($config['admin_rate_limit'] ?? null) ? $config['admin_rate_limit'] : [];
     $extensions = Extensions::load($config, $pdo);
 
     $enforceWriteLimit = static function () use ($pdo, $rateLimitEnabled, $trustProxy, $trustedProxyHops, $writeRateWindow, $writeRateMax): void {
@@ -345,13 +386,25 @@ try {
     };
 
     // Routes added by extensions live under /api/ext/<id>/ and never shadow core routes.
-    $dispatchExtension = static function () use ($extensions, $method, $pathname, $adminToken, $enforceWriteLimit): void {
+    // Every variable used inside must be listed in `use`: an undefined one here turned every
+    // extension admin route into a 500 before phase 5 (scripts/smoke-router.php covers this).
+    $dispatchExtension = static function () use (
+        $extensions,
+        $method,
+        $pathname,
+        $adminToken,
+        $adminLimits,
+        $enforceWriteLimit,
+        $pdo,
+        $trustProxy,
+        $trustedProxyHops
+    ): void {
         $match = $extensions->match($method, $pathname);
         if ($match === null) {
             return;
         }
         if ($match['route']['admin']) {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
         }
         if ($match['route']['rateLimited']) {
             $enforceWriteLimit();
@@ -360,7 +413,8 @@ try {
             $method,
             $pathname,
             $_GET,
-            static fn (): array => readJsonBody()
+            static fn (): array => readJsonBody(),
+            Database::clientKeyHash($pdo, clientIp($trustProxy, $trustedProxyHops))
         );
         [$status, $body] = Extensions::run($match, $request);
         sendJson($status, $body, [], $method === 'HEAD');
@@ -450,13 +504,13 @@ try {
         }
 
         if ($pathname === '/api/admin/extensions') {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             sendJson(200, ['extensions' => $extensions->adminList()], [], $headOnly);
         }
 
         // Every entry whatever its status, with the operator-only fields from toAdminEntry.
         if ($pathname === '/api/admin/entries') {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $status = is_string($_GET['status'] ?? null) ? $_GET['status'] : '';
             if ($status !== '' && !in_array($status, ['active', 'blocked', 'stale'], true)) {
                 throw new AppError(400, 'invalid_status', 'status must be active, blocked or stale.');
@@ -469,7 +523,20 @@ try {
             ]);
             sendJson(200, [
                 'total' => $result['total'],
-                'entries' => array_map([Database::class, 'toAdminEntry'], $result['entries']),
+                'entries' => Database::toAdminEntries($pdo, $result['entries']),
+            ], [], $headOnly);
+        }
+
+        // Operator warnings for the admin page: missing hub URL, IP salt kept in the database,
+        // failed schema upgrades and the look-alike rows that block the collation upgrade.
+        if ($pathname === '/api/admin/status') {
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
+            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
+            sendJson(200, [
+                'hubUrlConfigured' => $meta['directoryUrl'] !== '',
+                'hubUrl' => $meta['directoryUrl'],
+                'ipSaltInDatabase' => Database::ipSaltInDatabase(),
+                'maintenance' => Database::maintenanceStatus($pdo),
             ], [], $headOnly);
         }
 
@@ -506,7 +573,12 @@ try {
             if ($existingBySite === null && $normalizedInputUrl !== '') {
                 $domainCount = Database::countEntriesByRegistrableDomain($pdo, $normalizedInputUrl);
                 if ($domainCount >= $maxEntriesPerDomain) {
-                    throw new AppError(429, 'domain_limit_reached', 'Too many entries are already listed for this domain.');
+                    $domain = Database::registrableDomain($normalizedInputUrl);
+                    throw (new AppError(
+                        429,
+                        'domain_limit_reached',
+                        "This hub already lists the maximum number of sites ({$maxEntriesPerDomain}) from {$domain}."
+                    ))->withExtra(['domain' => $domain, 'limit' => $maxEntriesPerDomain]);
                 }
             }
             $site = Site::verifySite($body['siteUrl'], [
@@ -538,20 +610,33 @@ try {
             }
             if ($refreshCooldownSec > 0 && !empty($row['last_checked_at'])) {
                 $lastCheckedTs = strtotime((string) $row['last_checked_at']);
-                if ($lastCheckedTs !== false && (time() - $lastCheckedTs) < $refreshCooldownSec) {
-                    throw new AppError(429, 'rate_limited', 'This entry was refreshed recently. Try again in a few minutes.');
+                $waitSec = $lastCheckedTs === false ? 0 : $refreshCooldownSec - (time() - $lastCheckedTs);
+                if ($waitSec > 0) {
+                    $minutes = max(1, (int) ceil($waitSec / 60));
+                    throw (new AppError(
+                        429,
+                        'refresh_cooldown',
+                        "This site was checked recently. Try again in {$minutes} minute" . ($minutes === 1 ? '' : 's') . '.'
+                    ))->withExtra(['retryAfterSeconds' => $waitSec]);
                 }
             }
-            $site = Site::verifySite((string) $row['site_url'], [
-                'allowInsecure' => $allowInsecure,
-                'allowPrivate' => $allowPrivate,
-                'timeoutMs' => $refreshTimeoutMs,
-                'budgetMs' => $fetchBudgetMs,
-            ]);
-            if ($site['did'] !== $row['did']) {
-                throw new AppError(409, 'identity_changed', 'The site now publishes a different did:web identity.');
+            try {
+                $site = Site::verifySite((string) $row['site_url'], [
+                    'allowInsecure' => $allowInsecure,
+                    'allowPrivate' => $allowPrivate,
+                    'timeoutMs' => $refreshTimeoutMs,
+                    'budgetMs' => $fetchBudgetMs,
+                ]);
+                if ($site['did'] !== $row['did']) {
+                    throw new AppError(409, 'identity_changed', 'The site now publishes a different did:web identity.');
+                }
+                Entries::saveVerified($pdo, $extensions, $site);
+            } catch (\Throwable $err) {
+                // Record the attempt so the cooldown also applies to sites that fail or time out;
+                // otherwise a slow site could be re-crawled on every request.
+                Database::recordCheckAttempt($pdo, $row, $err instanceof AppError ? $err->getMessage() : 'Verification failed.');
+                throw $err;
             }
-            Entries::saveVerified($pdo, $extensions, $site);
             $updatedRow = Database::getEntryByDid($pdo, $did);
             sendJson(200, [
                 'entry' => Database::toPublicEntry($updatedRow ?? $row),
@@ -560,6 +645,18 @@ try {
 
         if (preg_match('#^/api/entries/([^/]+)/remove$#', $pathname, $matches)) {
             $enforceWriteLimit();
+            // The signed request names the hub it is meant for. Without a configured hub URL there
+            // is nothing trustworthy to compare it with (the Host header is set by the caller), so
+            // a removal signed for another hub could be replayed here. Refuse until it is set.
+            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
+            $expectedHubUrl = Verify::normalizeSiteUrl((string) ($meta['directoryUrl'] ?? ''));
+            if ($expectedHubUrl === '') {
+                throw new AppError(
+                    503,
+                    'hub_url_not_configured',
+                    "This hub has not configured its public URL, so self-service removal is unavailable. Contact the hub's operator."
+                );
+            }
             $did = decodeParam($matches[1]);
             $row = Database::getEntryByDid($pdo, $did);
             if ($row === null) {
@@ -575,13 +672,7 @@ try {
             if (!is_string($siteUrl) || !is_string($hubUrl) || !is_string($nonce) || !is_string($createdAt) || !is_string($signature)) {
                 throw new AppError(400, 'invalid_request', 'A signed removal request needs siteUrl, hubUrl, nonce, createdAt and signature.');
             }
-            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
-            $expectedHubUrl = Verify::normalizeSiteUrl((string) ($meta['directoryUrl'] ?? ''));
-            if ($expectedHubUrl === '' && !empty($_SERVER['HTTP_HOST'])) {
-                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                $expectedHubUrl = Verify::normalizeSiteUrl("{$scheme}://{$_SERVER['HTTP_HOST']}");
-            }
-            if ($expectedHubUrl === '' || Verify::normalizeSiteUrl($hubUrl) !== $expectedHubUrl) {
+            if (Verify::normalizeSiteUrl($hubUrl) !== $expectedHubUrl) {
                 throw new AppError(403, 'hub_mismatch', 'The removal request is not addressed to this hub.');
             }
             if (!empty($body['did']) && $body['did'] !== $row['did']) {
@@ -616,7 +707,7 @@ try {
         }
 
         if ($pathname === '/api/admin/settings') {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $body = readJsonBody();
             validateSettingsPatch($body);
             Database::setInstanceMeta($pdo, $body);
@@ -627,7 +718,7 @@ try {
         }
 
         if ($pathname === '/api/admin/refresh') {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $body = readJsonBody();
             $limit = parseLimit($body['limit'] ?? null, 10, 25);
             $rows = Database::listForRefresh($pdo, $limit);
@@ -639,6 +730,7 @@ try {
                         'allowInsecure' => $allowInsecure,
                         'allowPrivate' => $allowPrivate,
                         'timeoutMs' => $refreshTimeoutMs,
+                        'budgetMs' => $fetchBudgetMs,
                     ]);
                     if ($site['did'] !== $row['did']) {
                         throw new AppError(409, 'identity_changed', 'The site now publishes a different did:web identity.');
@@ -659,7 +751,7 @@ try {
         }
 
         if (preg_match('#^/api/admin/entries/([^/]+)/status$#', $pathname, $matches)) {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $did = decodeParam($matches[1]);
             $body = readJsonBody();
             $status = $body['status'] ?? null;
@@ -673,36 +765,45 @@ try {
             if ($row === null) {
                 throw new AppError(404, 'not_found', 'No such entry.');
             }
-            sendJson(200, ['entry' => Database::toAdminEntry($row)]);
+            sendJson(200, ['entry' => Database::toAdminEntry($row, Database::getCandidateKey($pdo, $did))]);
+        }
+
+        // Runs pending schema upgrades and re-runs ones that failed (for example the collation upgrade, after the
+        // operator removed the look-alike duplicates it reported).
+        if ($pathname === '/api/admin/migrations/retry') {
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
+            // migrate() first: with auto_migrate off, the tables the upgrades rely on may not exist yet.
+            Database::migrate($pdo);
+            Database::runMigrations($pdo, null, true);
+            sendJson(200, ['maintenance' => Database::maintenanceStatus($pdo)]);
         }
 
         // Accepts a site's new signing key when it changed without a rotation certificate (for
         // example after the owner lost their old key). Only the operator can do this, after
         // confirming the change with the owner some other way.
         if (preg_match('#^/api/admin/entries/([^/]+)/trust-key$#', $pathname, $matches)) {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $did = decodeParam($matches[1]);
             $row = Database::getEntryByDid($pdo, $did);
             if ($row === null) {
                 throw new AppError(404, 'not_found', 'No such entry.');
             }
-            $candidatePem = Database::getCandidateKey($pdo, $did);
-            $site = Site::verifySite((string) $row['site_url'], [
-                'allowInsecure' => $allowInsecure,
-                'allowPrivate' => $allowPrivate,
-                'timeoutMs' => $refreshTimeoutMs,
-                'budgetMs' => $fetchBudgetMs,
-            ]);
-            if ($site['did'] !== $row['did']) {
-                throw new AppError(409, 'identity_changed', 'The site now publishes a different did:web identity.');
-            }
-            if ($candidatePem !== null && Verify::spkiFingerprint($site['publicKeyPem']) !== Verify::spkiFingerprint($candidatePem)) {
-                throw new AppError(409, 'candidate_key_mismatch', 'The site is now serving a different key than the candidate key that was flagged for review.');
-            }
-            $result = Entries::saveVerified($pdo, $extensions, $site, true);
+            $body = readJsonBody();
+            $result = Entries::trustCandidateKey(
+                $pdo,
+                $extensions,
+                $row,
+                $body['expectedFingerprint'] ?? null,
+                static fn (): array => Site::verifySite((string) $row['site_url'], [
+                    'allowInsecure' => $allowInsecure,
+                    'allowPrivate' => $allowPrivate,
+                    'timeoutMs' => $refreshTimeoutMs,
+                    'budgetMs' => $fetchBudgetMs,
+                ])
+            );
             $updatedRow = Database::getEntryByDid($pdo, $did);
             sendJson(200, [
-                'entry' => Database::toAdminEntry($updatedRow ?? $row),
+                'entry' => Database::toAdminEntry($updatedRow ?? $row, Database::getCandidateKey($pdo, $did)),
                 'keyChanged' => $result['keyRotated'],
             ]);
         }
@@ -714,7 +815,7 @@ try {
 
     if ($method === 'DELETE') {
         if (preg_match('#^/api/admin/entries/([^/]+)$#', $pathname, $matches)) {
-            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops);
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $did = decodeParam($matches[1]);
             if (!Entries::remove($pdo, $extensions, $did, 'admin')) {
                 throw new AppError(404, 'not_found', 'No such entry.');

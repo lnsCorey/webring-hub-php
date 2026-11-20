@@ -154,25 +154,52 @@
     renderLeaderboard(data.leaderboard || []);
   }
 
+  const UNVERIFIED_TITLE = "Scores are self-reported by the player's browser and are not proof of identity.";
+  let lastScores = [];
+
+  function verificationPill(verified) {
+    const pill = make('span', verified ? 'pill-verified' : 'pill-unverified', verified ? 'Verified' : 'Unverified');
+    pill.title = verified ? 'This score was checked by the hub.' : UNVERIFIED_TITLE;
+    return pill;
+  }
+
   function renderLeaderboard(scores) {
+    lastScores = Array.isArray(scores) ? scores : [];
+    const verifiedOnly = el('verified-only').checked;
+    const rows = verifiedOnly ? lastScores.filter((row) => row.verified === true) : lastScores;
     const tbody = el('leaderboard-body');
     tbody.replaceChildren();
-    if (scores.length === 0) {
+    if (rows.length === 0) {
       const tr = make('tr');
-      const td = make('td', 'notice', 'No scores recorded yet. Be the first!');
+      const text = verifiedOnly
+        ? 'No verified scores yet. Every score on this arcade is currently self-reported.'
+        : 'No scores recorded yet. Be the first!';
+      const td = make('td', 'notice', text);
       td.colSpan = 4;
       tr.appendChild(td);
       tbody.appendChild(tr);
       return;
     }
-    scores.forEach((row) => {
+    rows.forEach((row) => {
       const tr = make('tr');
       tr.appendChild(make('td', '', `#${row.rank}`));
       tr.appendChild(make('td', '', `${row.displayName} (${row.did})`));
-      tr.appendChild(make('td', '', String(row.score)));
+      const scoreCell = make('td', '', String(row.score));
+      scoreCell.appendChild(verificationPill(row.verified === true));
+      tr.appendChild(scoreCell);
       tr.appendChild(make('td', '', row.achievedAt ? row.achievedAt.slice(0, 10) : ''));
       tbody.appendChild(tr);
     });
+  }
+
+  el('verified-only').addEventListener('change', () => renderLeaderboard(lastScores));
+
+  /** Readable text for an API error, with a clear message when the player is rate-limited. */
+  function apiErrorText(res, data, fallback) {
+    if (res && res.status === 429) {
+      return (data && data.message) || "You're going too quickly. Try again in a few minutes.";
+    }
+    return (data && data.message) || fallback;
   }
 
   async function startGame() {
@@ -189,10 +216,13 @@
         if (res.ok) {
           const sess = await res.json();
           currentSessionId = sess.sessionId || '';
-          statusEl.textContent = `Playing as ${activePlayerName} — high score tracking active`;
+          statusEl.textContent = `Playing as ${activePlayerName} — scores are saved (self-reported, unverified)`;
           statusEl.className = 'status-pill status-ok';
         } else {
-          statusEl.textContent = 'Guest play (could not start scored session)';
+          const data = await res.json().catch(() => ({}));
+          statusEl.textContent = res.status === 429
+            ? `Guest play — ${apiErrorText(res, data, '')}`
+            : 'Guest play (could not start scored session)';
           statusEl.className = 'status-pill status-warn';
         }
       } catch {
@@ -253,7 +283,7 @@
             renderLeaderboard(lb.scores || []);
           }
         } else {
-          statusEl.textContent = out.message || 'Score could not be saved.';
+          statusEl.textContent = apiErrorText(res, out, 'Score could not be saved.');
           statusEl.className = 'status-pill status-warn';
         }
       } catch {

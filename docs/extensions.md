@@ -137,7 +137,7 @@ final class MyExtension implements Extension
 | `fetchJson(string $url)` | `Net::safeGetJson` with the hub's guard settings: https only, no private addresses, size and time limits. |
 | `isoNow()` | The core's timestamp format. |
 
-A route handler receives `(array $params, ExtensionRequest $req)`. It returns either an array (sent as JSON with status 200) or `[int $status, array $body]`. Throw `WebringHub\AppError` for error responses, for example `new AppError(404, 'not_found', 'No such entry.')`; they use the core's `{error, message}` shape.
+A route handler receives `(array $params, ExtensionRequest $req)`. `$req` has `method`, `path`, `query`, `json()` (the request body, read on demand) and `clientKey`: a salted hash that identifies the caller's IP address without revealing it, for your own per-client limits. Never store raw IPs. The handler returns either an array (sent as JSON with status 200) or `[int $status, array $body]`. Throw `WebringHub\AppError` for error responses, for example `new AppError(404, 'not_found', 'No such entry.')`; they use the core's `{error, message}` shape.
 
 Extension routes are matched only after every core route, so they can never shadow one.
 
