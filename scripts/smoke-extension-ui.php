@@ -23,6 +23,7 @@ require_once __DIR__ . '/../src/Verify.php';
 require_once __DIR__ . '/../src/Net.php';
 require_once __DIR__ . '/../src/Site.php';
 require_once __DIR__ . '/../src/Database.php';
+require_once __DIR__ . '/../src/Template.php';
 require_once __DIR__ . '/../src/Extensions.php';
 
 $failures = 0;
@@ -300,6 +301,28 @@ check(
     isset($availById['broken-manifest']) && !empty($availById['broken-manifest']['problem']),
     'availableList() reports a bad manifest in problem'
 );
+
+echo "home page carousel template\n";
+$emptyHome = Template::renderTemplateFile('index.html', Database::DEFAULT_INSTANCE_META, $pdo, []);
+check(!str_contains($emptyHome, 'ext-carousel'), 'plain hub renders no carousel markup');
+check(!str_contains($emptyHome, '/ext-carousel.js'), 'plain hub does not load ext-carousel.js');
+
+$xssHome = Template::renderTemplateFile('index.html', Database::DEFAULT_INSTANCE_META, $pdo, [
+    [
+        'id' => 'ext-pub',
+        'title' => '<script>alert(1)</script>',
+        'tagline' => 'A & B "quoted"',
+        'href' => '/ext/ext-pub/',
+        'cta' => 'Play',
+        'art' => '/ext/ext-pub/card.svg',
+        'accent' => 'magenta',
+    ],
+]);
+check(str_contains($xssHome, 'class="ext-carousel"'), 'home renders carousel when user-facing cards exist');
+check(str_contains($xssHome, '&lt;script&gt;alert(1)&lt;/script&gt;'), 'card title is HTML-escaped');
+check(!str_contains($xssHome, '<script>alert(1)</script>'), 'raw script tag never appears in card HTML');
+check(str_contains($xssHome, 'ext-accent-magenta'), 'accent class is applied');
+check(str_contains($xssHome, '<script type="module" src="/ext-carousel.js"></script>'), 'ext-carousel.js is loaded when carousel is present');
 
 // Cleanup
 $pdo = null;

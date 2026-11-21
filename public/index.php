@@ -25,8 +25,10 @@ const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' https: data:
 
 const STATIC_ASSETS = [
     '/app.js' => ['app.js', 'text/javascript; charset=utf-8'],
+    '/ext-carousel.js' => ['ext-carousel.js', 'text/javascript; charset=utf-8'],
     '/remove.js' => ['remove.js', 'text/javascript; charset=utf-8'],
     '/admin.js' => ['admin.js', 'text/javascript; charset=utf-8'],
+    '/admin-panels.js' => ['admin-panels.js', 'text/javascript; charset=utf-8'],
     '/style.css' => ['style.css', 'text/css; charset=utf-8'],
     '/favicon.svg' => ['favicon.svg', 'image/svg+xml'],
     '/favicon.png' => ['favicon.png', 'image/png'],
@@ -437,7 +439,7 @@ try {
 
         if ($pathname === '/' || $pathname === '/index.html') {
             $meta = Database::getInstanceMeta($pdo, $defaultMeta);
-            $html = Template::renderTemplateFile('index.html', $meta, $pdo);
+            $html = Template::renderTemplateFile('index.html', $meta, $pdo, $extensions->publicCards());
             sendHtml(200, $html, $headOnly);
         }
 

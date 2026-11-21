@@ -61,12 +61,77 @@ final class Template
     }
 
     /**
+     * Renders the server-side extension carousel for the home page, or '' when there are no
+     * user-facing extensions enabled. All text is HTML-escaped; no inline styles or handlers.
+     *
+     * @param list<array{id: string, title: string, tagline: string, href: string, cta: string, art: string, accent: string}> $cards
+     */
+    public static function renderExtensionCardsHtml(array $cards): string
+    {
+        if (count($cards) === 0) {
+            return '';
+        }
+        $total = count($cards);
+        $allowedAccents = ['magenta', 'cyan', 'yellow', 'green', 'violet', 'orange'];
+        $slidesHtml = '';
+        foreach ($cards as $i => $card) {
+            $num = $i + 1;
+            $accent = in_array($card['accent'] ?? '', $allowedAccents, true) ? $card['accent'] : 'cyan';
+            $artHtml = !empty($card['art'])
+                ? '<div class="ext-card-media"><img class="ext-card-art" src="' . self::escapeHtml($card['art']) . '" alt="" loading="lazy" /></div>'
+                : '';
+            $taglineHtml = ($card['tagline'] ?? '') !== ''
+                ? '<p class="ext-card-tagline">' . self::escapeHtml($card['tagline']) . '</p>'
+                : '';
+            $slidesHtml .= '<article class="ext-card ext-accent-' . $accent . '" role="group" aria-roledescription="slide" aria-label="Slide ' . $num . ' of ' . $total . '" data-ext-id="' . self::escapeHtml($card['id'] ?? '') . '">'
+                . $artHtml
+                . '<div class="ext-card-body">'
+                . '<h3 class="ext-card-title">' . self::escapeHtml($card['title'] ?? '') . '</h3>'
+                . $taglineHtml
+                . '<div class="ext-card-actions">'
+                . '<a class="ext-card-cta" href="' . self::escapeHtml($card['href'] ?? '#') . '">' . self::escapeHtml($card['cta'] ?? 'Open') . '</a>'
+                . '</div>'
+                . '</div>'
+                . '</article>';
+        }
+
+        $controlsHtml = '';
+        if ($total > 1) {
+            $dotsHtml = '';
+            for ($i = 0; $i < $total; $i++) {
+                $num = $i + 1;
+                $current = $i === 0 ? ' aria-current="true"' : ' aria-current="false"';
+                $dotsHtml .= '<button type="button" class="ext-carousel-dot" data-slide-index="' . $i . '" aria-label="Go to slide ' . $num . '"' . $current . '></button>';
+            }
+            $controlsHtml = '<div class="ext-carousel-nav">'
+                . '<button type="button" class="ext-carousel-btn ext-carousel-prev" aria-label="Previous extension">&#8249;</button>'
+                . '<div class="ext-carousel-dots" aria-label="Choose extension slide">' . $dotsHtml . '</div>'
+                . '<button type="button" class="ext-carousel-btn ext-carousel-next" aria-label="Next extension">&#8250;</button>'
+                . '</div>';
+        }
+
+        return '<div class="wrap ext-carousel-wrap">'
+            . '<section class="ext-carousel" aria-roledescription="carousel" aria-label="Hub extensions" tabindex="0">'
+            . '<div class="ext-carousel-head">'
+            . '<h2 class="ext-carousel-heading">Hub extensions</h2>'
+            . '<span class="ext-carousel-status" aria-live="polite">Slide 1 of ' . $total . '</span>'
+            . $controlsHtml
+            . '</div>'
+            . '<div class="ext-carousel-track">'
+            . $slidesHtml
+            . '</div>'
+            . '</section>'
+            . '</div>';
+    }
+
+    /**
      * Renders `index.html`, `remove.html` or `admin.html` with the instance's custom title,
-     * description, banner, and maintainer badge.
+     * description, banner, maintainer badge, and optional home-page extension carousel.
      *
      * @param array<string, mixed> $meta
+     * @param list<array{id: string, title: string, tagline: string, href: string, cta: string, art: string, accent: string}> $extensionCards
      */
-    public static function renderInstanceHtml(string $name, string $rawHtml, array $meta, ?PDO $pdo = null): string
+    public static function renderInstanceHtml(string $name, string $rawHtml, array $meta, ?PDO $pdo = null, array $extensionCards = []): string
     {
         $safe = Database::normalizeInstanceMeta($meta, Database::DEFAULT_INSTANCE_META);
         $info = Database::resolvePublicInfo($pdo, $safe);
@@ -129,6 +194,22 @@ final class Template
                     $html
                 ) ?? $html;
             }
+
+            $carouselHtml = self::renderExtensionCardsHtml($extensionCards);
+            $html = preg_replace_callback(
+                '/<!--EXTENSION_CARDS-->[\s\S]*?<!--\/EXTENSION_CARDS-->/',
+                static fn(): string => $carouselHtml,
+                $html
+            ) ?? $html;
+
+            $carouselScript = $carouselHtml !== ''
+                ? '<script type="module" src="/ext-carousel.js"></script>'
+                : '';
+            $html = preg_replace_callback(
+                '/<!--EXTENSION_CARDS_SCRIPT-->[\s\S]*?<!--\/EXTENSION_CARDS_SCRIPT-->/',
+                static fn(): string => $carouselScript,
+                $html
+            ) ?? $html;
         } elseif ($name === 'remove.html' || $name === 'admin.html') {
             $prefix = $name === 'admin.html' ? 'Admin' : 'Remove a site';
             $titleTag = '<title>' . $prefix . ' — ' . self::escapeHtml($safe['title']) . '</title>';
@@ -146,14 +227,15 @@ final class Template
      * Loads `src/templates/$name` and renders it with instance metadata.
      *
      * @param array<string, mixed> $meta
+     * @param list<array{id: string, title: string, tagline: string, href: string, cta: string, art: string, accent: string}> $extensionCards
      */
-    public static function renderTemplateFile(string $name, array $meta, ?PDO $pdo = null): string
+    public static function renderTemplateFile(string $name, array $meta, ?PDO $pdo = null, array $extensionCards = []): string
     {
         $templatePath = __DIR__ . '/templates/' . $name;
         if (!is_file($templatePath)) {
             throw new AppError(500, 'missing_template', "Template {$name} not found.");
         }
         $rawHtml = (string) file_get_contents($templatePath);
-        return self::renderInstanceHtml($name, $rawHtml, $meta, $pdo);
+        return self::renderInstanceHtml($name, $rawHtml, $meta, $pdo, $extensionCards);
     }
 }
