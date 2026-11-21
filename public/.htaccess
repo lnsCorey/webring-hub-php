@@ -9,6 +9,14 @@ Options -Indexes
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "no-referrer"
   Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" "expr=%{HTTPS} == 'on'"
+
+  # Scripts and styles change with every release, but the host adds a 7-day expiry to files it
+  # serves directly, so browsers kept an old admin.js for a week and a fix never showed up.
+  # Make browsers check each time; an unchanged file answers 304 (a few bytes), so it's cheap.
+  <FilesMatch "\.(js|css)$">
+    Header always set Cache-Control "no-cache"
+    Header always unset Expires
+  </FilesMatch>
 </IfModule>
 
 # Block dotfiles (e.g. .git, .htaccess, .env) even without mod_rewrite
