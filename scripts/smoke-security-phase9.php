@@ -146,5 +146,15 @@ $ver = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = ?');
 $ver->execute(['migrations:code_version']);
 check($ver->fetchColumn() === Database::MIGRATION_CODE_VERSION, 'the current code version is recorded');
 
+echo "Admin page: every POST sends a JSON Content-Type\n";
+// The hub answers 415 to a POST without one, and the Refresh now button sends no body. The
+// script's api() helper must therefore send an empty JSON object for a bodiless POST.
+$adminJs = str_replace("\r\n", "\n", (string) file_get_contents(__DIR__ . '/../public/admin.js'));
+check(
+    str_contains($adminJs, "method === 'POST' ? {} : undefined")
+        && str_contains($adminJs, "if (payload !== undefined) headers['content-type'] = 'application/json';"),
+    'admin.js api() sends {} as JSON for a POST with no body (Refresh now returned 415 before)'
+);
+
 echo $failures === 0 ? "all phase 9 checks passed\n" : "{$failures} phase 9 check(s) FAILED\n";
 exit($failures === 0 ? 0 : 1);

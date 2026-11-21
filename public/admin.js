@@ -103,14 +103,17 @@ class ApiError extends Error {
 
 async function api(path, { method = 'GET', body, admin = true } = {}) {
   const headers = { accept: 'application/json' };
-  if (body !== undefined) headers['content-type'] = 'application/json';
+  // The hub requires a JSON Content-Type on every POST, so a POST with nothing to send (such as
+  // Refresh now) still sends an empty JSON object
+  const payload = body !== undefined ? body : method === 'POST' ? {} : undefined;
+  if (payload !== undefined) headers['content-type'] = 'application/json';
   if (admin) headers.authorization = `Bearer ${currentToken()}`;
   let response;
   try {
     response = await fetch(path, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: payload !== undefined ? JSON.stringify(payload) : undefined,
       cache: 'no-store',
       credentials: 'same-origin'
     });
