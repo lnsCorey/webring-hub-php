@@ -146,6 +146,27 @@ $ver = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = ?');
 $ver->execute(['migrations:code_version']);
 check($ver->fetchColumn() === Database::MIGRATION_CODE_VERSION, 'the current code version is recorded');
 
+echo "Upgrade not run yet: the hub keeps working without the blocked_sites table\n";
+$pdo = freshPdo();
+Database::upsertEntry($pdo, fakeSite($siteUrl, $key['publicKeyPem']));
+$pdo->exec('DROP TABLE blocked_sites');
+$pdo->prepare('DELETE FROM schema_migrations WHERE id = ?')->execute(['2026_11_blocked_sites']);
+check(!Database::hasBlockList($pdo), 'the missing table is detected');
+check(!Database::isBlocked($pdo, $did, $siteUrl), 'a submission is not refused with an error (isBlocked is false)');
+check(Database::blockedSitesWithoutListing($pdo) === [], 'the admin status can still list blocked sites (none)');
+$threw = false;
+try {
+    Entries::setStatus($pdo, $ext, $did, 'blocked');
+    Entries::setStatus($pdo, $ext, $did, 'active');
+} catch (\Throwable) {
+    $threw = true;
+}
+check(!$threw, 'blocking and unblocking a listing still works');
+check(!Database::unblockSite($pdo, $did), 'unblocking a site reports nothing to lift');
+check(in_array('2026_11_blocked_sites', Database::maintenanceStatus($pdo)['pendingMigrations'], true), 'the admin page lists the upgrade as pending');
+Database::runMigrations($pdo);
+check(Database::hasBlockList($pdo), 'running the upgrade creates the table');
+
 echo "Admin page: every POST sends a JSON Content-Type\n";
 // The hub answers 415 to a POST without one, and the Refresh now button sends no body. The
 // script's api() helper must therefore send an empty JSON object for a bodiless POST.

@@ -1156,11 +1156,28 @@ final class Database
     }
 
     /**
+     * Whether the `blocked_sites` table exists. It's created by an upgrade, which may not have run
+     * yet (auto_migrate off after a deploy) or may have failed; the hub must keep working until it
+     * does, so the block-list methods do nothing rather than fail. The admin page reports the
+     * pending or failed upgrade (maintenanceStatus).
+     */
+    public static function hasBlockList(PDO $pdo): bool
+    {
+        $sql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite'
+            ? "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'blocked_sites'"
+            : "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'blocked_sites' LIMIT 1";
+        return $pdo->query($sql)->fetchColumn() !== false;
+    }
+
+    /**
      * Records a block that outlives the listing: the site can't be re-submitted while it's here,
      * even after the listing is deleted. Only an operator's unblock removes it.
      */
     public static function blockSite(PDO $pdo, string $did, string $siteUrl, string $reason = '', ?string $now = null): void
     {
+        if (!self::hasBlockList($pdo)) {
+            return; // the upgrade hasn't run: the entry's own status still blocks it, and /admin shows the pending upgrade
+        }
         $pdo->prepare('DELETE FROM blocked_sites WHERE did = ?')->execute([$did]);
         $pdo->prepare('INSERT INTO blocked_sites (did, site_url, reason, blocked_at) VALUES (?, ?, ?, ?)')
             ->execute([$did, $siteUrl, self::cleanSingleLine($reason, 500), $now ?? self::isoNow()]);
@@ -1169,6 +1186,9 @@ final class Database
     /** Lifts a block. Returns true when there was one. */
     public static function unblockSite(PDO $pdo, string $did): bool
     {
+        if (!self::hasBlockList($pdo)) {
+            return false;
+        }
         $stmt = $pdo->prepare('DELETE FROM blocked_sites WHERE did = ?');
         $stmt->execute([$did]);
         return $stmt->rowCount() > 0;
@@ -1177,6 +1197,9 @@ final class Database
     /** True when the site (by DID or by normalised site URL) is on the block list. */
     public static function isBlocked(PDO $pdo, string $did, string $siteUrl): bool
     {
+        if (!self::hasBlockList($pdo)) {
+            return false; // see blockSite(); submissions keep working until the upgrade runs
+        }
         $stmt = $pdo->prepare('SELECT 1 FROM blocked_sites WHERE did = ? OR site_url = ? LIMIT 1');
         $stmt->execute([$did, $siteUrl]);
         return $stmt->fetchColumn() !== false;
@@ -1190,6 +1213,9 @@ final class Database
      */
     public static function blockedSitesWithoutListing(PDO $pdo): array
     {
+        if (!self::hasBlockList($pdo)) {
+            return [];
+        }
         $rows = $pdo->query(
             'SELECT b.did, b.site_url, b.reason, b.blocked_at FROM blocked_sites b
              LEFT JOIN entries e ON e.did = b.did WHERE e.did IS NULL ORDER BY b.blocked_at DESC LIMIT 200'
