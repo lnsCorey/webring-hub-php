@@ -33,6 +33,14 @@ final class ExtensionContext
     /** @var array<string, list<callable>> */
     public array $listeners = [];
 
+    /** @var array{kind: string, public: ?array<string, mixed>, panels: list<array<string, mixed>>, error: ?string} */
+    public array $ui = [
+        'kind' => 'headless',
+        'public' => null,
+        'panels' => [],
+        'error' => null,
+    ];
+
     /**
      * @param array<string, mixed> $manifest
      * @param array<string, mixed> $config
@@ -374,19 +382,49 @@ final class Extensions
     /**
      * Extensions that loaded, for `/api/info`.
      *
-     * @return list<array{id: string, version: string, apiVersion: int}>
+     * @return list<array<string, mixed>>
      */
     public function publicList(): array
     {
         $out = [];
         foreach ($this->loaded as $id => $ctx) {
-            $out[] = [
+            $entry = [
                 'id' => $id,
                 'version' => (string) ($ctx->manifest['version'] ?? '0.0.0'),
                 'apiVersion' => (int) ($ctx->manifest['apiVersion'] ?? self::API_VERSION),
+                'kind' => $ctx->ui['kind'],
             ];
+            if ($ctx->ui['public'] !== null) {
+                $entry['ui'] = ['public' => $ctx->ui['public']];
+            }
+            $out[] = $entry;
         }
         return $out;
+    }
+
+    /**
+     * Public carousel cards for enabled user-facing extensions (server-side home page rendering).
+     *
+     * @return list<array{id: string, title: string, tagline: string, href: string, cta: string, art: string, accent: string}>
+     */
+    public function publicCards(): array
+    {
+        $cards = [];
+        foreach ($this->loaded as $id => $ctx) {
+            if ($ctx->ui['public'] !== null) {
+                $pub = $ctx->ui['public'];
+                $cards[] = [
+                    'id' => $id,
+                    'title' => (string) $pub['title'],
+                    'tagline' => (string) $pub['tagline'],
+                    'href' => (string) $pub['href'],
+                    'cta' => (string) $pub['cta'],
+                    'art' => (string) $pub['art'],
+                    'accent' => (string) $pub['accent'],
+                ];
+            }
+        }
+        return $cards;
     }
 
     /**
@@ -406,12 +444,96 @@ final class Extensions
                 'version' => $ctx ? (string) ($ctx->manifest['version'] ?? '') : '',
                 'apiVersion' => $ctx ? (int) ($ctx->manifest['apiVersion'] ?? self::API_VERSION) : 0,
                 'schemaVersion' => $ctx ? $ctx->schemaVersion() : 0,
+                'kind' => $ctx ? $ctx->ui['kind'] : 'headless',
+                'panels' => $ctx ? $ctx->ui['panels'] : [],
+                'uiError' => $ctx ? $ctx->ui['error'] : null,
                 'routes' => $ctx ? array_map(static fn ($r) => $r['method'] . ' ' . $r['pattern'], $ctx->routes) : [],
                 'public' => $ctx ? array_values(array_map(static fn ($p) => $p['mountPath'] . '/', $ctx->publicRoutes)) : [],
                 'events' => $ctx ? array_keys($ctx->listeners) : [],
                 'error' => $this->errors[$id] ?? null,
             ];
         }
+        return $out;
+    }
+
+    /**
+     * Scans `extensions/<id>/extension.json` for installed extensions that are not currently
+     * enabled. Reads JSON only and never loads or executes any PHP.
+     *
+     * @return list<array{id: string, name: string, version: string, description: string, kind: string, configLine: string, problem: ?string}>
+     */
+    public function availableList(): array
+    {
+        if ($this->root === '' || !is_dir($this->root)) {
+            return [];
+        }
+        $entries = @scandir($this->root);
+        if (!is_array($entries)) {
+            return [];
+        }
+        $enabledSet = array_flip($this->enabled);
+        $out = [];
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..' || str_starts_with($entry, '.')) {
+                continue;
+            }
+            $dir = $this->root . '/' . $entry;
+            if (!is_dir($dir)) {
+                continue;
+            }
+            if (isset($enabledSet[$entry])) {
+                continue;
+            }
+            $manifestPath = $dir . '/extension.json';
+            if (!is_file($manifestPath)) {
+                continue;
+            }
+
+            $problem = null;
+            $name = $entry;
+            $version = '';
+            $description = '';
+            $kind = 'headless';
+
+            if (!preg_match('/^[a-z][a-z0-9-]{1,40}$/', $entry)) {
+                $problem = 'Folder name is not a valid extension id.';
+            } else {
+                $raw = @file_get_contents($manifestPath);
+                $manifest = is_string($raw) ? json_decode($raw, true) : null;
+                if (!is_array($manifest)) {
+                    $problem = 'extension.json is not a valid JSON object.';
+                } else {
+                    if (($manifest['id'] ?? null) !== $entry) {
+                        $problem = 'extension.json id does not match folder name.';
+                    } elseif ((int) ($manifest['apiVersion'] ?? 0) !== self::API_VERSION) {
+                        $problem = 'Unsupported apiVersion (this hub supports ' . self::API_VERSION . ').';
+                    } elseif (!is_string($manifest['class'] ?? null) || !preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*$/', $manifest['class'])) {
+                        $problem = 'extension.json must name the extension class.';
+                    } elseif (!is_file($dir . '/Extension.php')) {
+                        $problem = 'Missing Extension.php.';
+                    }
+                    $name = is_string($manifest['name'] ?? null) && $manifest['name'] !== '' ? $manifest['name'] : $entry;
+                    $version = is_string($manifest['version'] ?? null) ? $manifest['version'] : '';
+                    $description = is_string($manifest['description'] ?? null) ? $manifest['description'] : '';
+                    $kind = ExtensionUi::inferKindFromManifest($manifest);
+                }
+            }
+
+            $enabledWithThis = array_values(array_unique(array_merge($this->enabled, [$entry])));
+            $quoted = array_map(static fn (string $x): string => "'" . addslashes($x) . "'", $enabledWithThis);
+            $configLine = "'extensions' => [" . implode(', ', $quoted) . "],";
+
+            $out[] = [
+                'id' => $entry,
+                'name' => $name,
+                'version' => $version,
+                'description' => $description,
+                'kind' => $kind,
+                'configLine' => $configLine,
+                'problem' => $problem,
+            ];
+        }
+        usort($out, static fn (array $a, array $b): int => strcmp($a['id'], $b['id']));
         return $out;
     }
 
@@ -661,6 +783,558 @@ final class Extensions
         }
         $ctx = new ExtensionContext($id, $manifest, $pdo, $config, $dir);
         $instance->register($ctx);
+        $ctx->ui = ExtensionUi::normalise($manifest, $ctx);
         $this->loaded[$id] = $ctx;
+    }
+}
+
+/**
+ * Validates and normalises the optional `ui` block in an extension's `extension.json`.
+ * Any validation error causes the entire `ui` block to be ignored (returning kind `headless`
+ * and an `error` message for `/admin`) while still allowing the extension itself to load.
+ */
+final class ExtensionUi
+{
+    public const ACCENTS = ['magenta', 'cyan', 'yellow', 'green', 'violet', 'orange'];
+    public const ART_EXTENSIONS = ['svg', 'png', 'jpg', 'jpeg', 'webp'];
+    public const PANEL_TYPES = ['stats', 'table', 'form'];
+    public const COLUMN_RENDERERS = ['text', 'code', 'time', 'badge'];
+    public const ACTION_METHODS = ['POST', 'DELETE'];
+
+    public const MAX_PANELS = 8;
+    public const MAX_COLUMNS = 12;
+    public const MAX_ACTIONS = 6;
+    public const MAX_FIELDS = 12;
+
+    /**
+     * Lightweight kind inference for un-loaded manifests (e.g. `availableList()`).
+     *
+     * @param array<string, mixed> $manifest
+     */
+    public static function inferKindFromManifest(array $manifest): string
+    {
+        $ui = $manifest['ui'] ?? null;
+        if (!is_array($ui)) {
+            return 'headless';
+        }
+        $hasPublic = is_array($ui['public'] ?? null);
+        $hasAdmin = is_array($ui['admin'] ?? null) && is_array($ui['admin']['panels'] ?? null) && count($ui['admin']['panels']) > 0;
+        if ($hasPublic && $hasAdmin) {
+            return 'both';
+        }
+        if ($hasPublic) {
+            return 'public';
+        }
+        if ($hasAdmin) {
+            return 'admin';
+        }
+        return 'headless';
+    }
+
+    /**
+     * @param array<string, mixed> $manifest
+     * @return array{kind: string, public: ?array<string, mixed>, panels: list<array<string, mixed>>, error: ?string}
+     */
+    public static function normalise(array $manifest, ExtensionContext $ctx): array
+    {
+        if (!array_key_exists('ui', $manifest) || $manifest['ui'] === null) {
+            return ['kind' => 'headless', 'public' => null, 'panels' => [], 'error' => null];
+        }
+        $ui = $manifest['ui'];
+        if (!is_array($ui) || (count($ui) > 0 && array_is_list($ui))) {
+            return self::fail('ui must be a JSON object.');
+        }
+
+        $publicCard = null;
+        if (array_key_exists('public', $ui) && $ui['public'] !== null) {
+            if (!is_array($ui['public'])) {
+                return self::fail('ui.public must be a JSON object.');
+            }
+            $res = self::normalisePublic($ui['public'], $ctx);
+            if (is_string($res)) {
+                return self::fail($res);
+            }
+            $publicCard = $res;
+        }
+
+        $panels = [];
+        if (array_key_exists('admin', $ui) && $ui['admin'] !== null) {
+            if (!is_array($ui['admin'])) {
+                return self::fail('ui.admin must be a JSON object.');
+            }
+            $res = self::normaliseAdmin($ui['admin'], $ctx);
+            if (is_string($res)) {
+                return self::fail($res);
+            }
+            $panels = $res;
+        }
+
+        $hasPublic = $publicCard !== null;
+        $hasAdmin = count($panels) > 0;
+        $kind = ($hasPublic && $hasAdmin)
+            ? 'both'
+            : ($hasPublic ? 'public' : ($hasAdmin ? 'admin' : 'headless'));
+
+        return [
+            'kind' => $kind,
+            'public' => $publicCard,
+            'panels' => $panels,
+            'error' => null,
+        ];
+    }
+
+    /**
+     * @return array{kind: string, public: null, panels: list<array<string, mixed>>, error: string}
+     */
+    private static function fail(string $reason): array
+    {
+        return [
+            'kind' => 'headless',
+            'public' => null,
+            'panels' => [],
+            'error' => $reason,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $pub
+     * @return array{title: string, tagline: string, href: string, cta: string, art: string, accent: string}|string
+     */
+    private static function normalisePublic(array $pub, ExtensionContext $ctx): array|string
+    {
+        $title = trim((string) ($pub['title'] ?? ''));
+        if ($title === '' || mb_strlen($title) > 60) {
+            return 'ui.public.title must be 1–60 characters.';
+        }
+        $tagline = trim((string) ($pub['tagline'] ?? ''));
+        if (mb_strlen($tagline) > 160) {
+            return 'ui.public.tagline must be at most 160 characters.';
+        }
+        $cta = trim((string) ($pub['cta'] ?? 'Open'));
+        if ($cta === '' || mb_strlen($cta) > 32) {
+            return 'ui.public.cta must be 1–32 characters.';
+        }
+
+        $href = (string) ($pub['href'] ?? '');
+        $hrefPrefix = '/ext/' . $ctx->id . '/';
+        if (
+            !str_starts_with($href, $hrefPrefix)
+            || !preg_match('#^/ext/' . preg_quote($ctx->id, '#') . '/[A-Za-z0-9._/-]*$#', $href)
+            || str_contains($href, '..')
+            || str_contains($href, '//')
+            || mb_strlen($href) > 160
+        ) {
+            return "ui.public.href must stay under {$hrefPrefix}.";
+        }
+        foreach (explode('/', substr($href, strlen($hrefPrefix))) as $seg) {
+            if ($seg !== '' && str_starts_with($seg, '.')) {
+                return 'ui.public.href must not reference hidden files.';
+            }
+        }
+
+        $accent = (string) ($pub['accent'] ?? 'cyan');
+        if (!in_array($accent, self::ACCENTS, true)) {
+            return 'ui.public.accent must be one of: ' . implode(', ', self::ACCENTS) . '.';
+        }
+
+        $artUrl = '';
+        if (isset($pub['art']) && $pub['art'] !== '') {
+            if (!is_string($pub['art'])) {
+                return 'ui.public.art must be a relative file path.';
+            }
+            $art = $pub['art'];
+            if (
+                strlen($art) > 120
+                || str_starts_with($art, '/')
+                || str_contains($art, '..')
+                || str_contains($art, '\\')
+                || str_contains($art, "\0")
+                || str_contains($art, '://')
+                || !preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]*$#', $art)
+            ) {
+                return 'ui.public.art must be a relative path inside the extension public folder.';
+            }
+            foreach (explode('/', $art) as $seg) {
+                if ($seg === '' || str_starts_with($seg, '.')) {
+                    return 'ui.public.art must not contain empty or hidden path segments.';
+                }
+            }
+            $ext = strtolower(pathinfo($art, PATHINFO_EXTENSION));
+            if (!in_array($ext, self::ART_EXTENSIONS, true)) {
+                return 'ui.public.art must be an image file (' . implode(', ', self::ART_EXTENSIONS) . ').';
+            }
+            $artUrl = '/ext/' . $ctx->id . '/' . $art;
+        }
+
+        return [
+            'title' => $title,
+            'tagline' => $tagline,
+            'href' => $href,
+            'cta' => $cta,
+            'art' => $artUrl,
+            'accent' => $accent,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $admin
+     * @return list<array<string, mixed>>|string
+     */
+    private static function normaliseAdmin(array $admin, ExtensionContext $ctx): array|string
+    {
+        $rawPanels = $admin['panels'] ?? null;
+        if (!is_array($rawPanels) || !array_is_list($rawPanels) || count($rawPanels) === 0) {
+            return 'ui.admin.panels must be a non-empty list.';
+        }
+        if (count($rawPanels) > self::MAX_PANELS) {
+            return 'ui.admin.panels exceeds the maximum of ' . self::MAX_PANELS . ' panels.';
+        }
+
+        $seenIds = [];
+        $panels = [];
+        foreach ($rawPanels as $idx => $p) {
+            if (!is_array($p)) {
+                return "ui.admin.panels[{$idx}] must be an object.";
+            }
+            $pid = (string) ($p['id'] ?? '');
+            if (!preg_match('/^[a-z][a-z0-9_-]{0,40}$/', $pid)) {
+                return "ui.admin.panels[{$idx}].id is invalid.";
+            }
+            if (isset($seenIds[$pid])) {
+                return "Duplicate panel id \"{$pid}\".";
+            }
+            $seenIds[$pid] = true;
+
+            $title = trim((string) ($p['title'] ?? ''));
+            if ($title === '' || mb_strlen($title) > 80) {
+                return "Panel \"{$pid}\" title must be 1–80 characters.";
+            }
+            $description = trim((string) ($p['description'] ?? ''));
+            if (mb_strlen($description) > 240) {
+                return "Panel \"{$pid}\" description must be at most 240 characters.";
+            }
+
+            $type = (string) ($p['type'] ?? '');
+            if (!in_array($type, self::PANEL_TYPES, true)) {
+                return "Panel \"{$pid}\" has unsupported type \"{$type}\".";
+            }
+
+            if ($type === 'stats') {
+                $panel = self::normaliseStatsPanel($pid, $title, $description, $p, $ctx);
+            } elseif ($type === 'table') {
+                $panel = self::normaliseTablePanel($pid, $title, $description, $p, $ctx);
+            } else {
+                $panel = self::normaliseFormPanel($pid, $title, $description, $p, $ctx);
+            }
+            if (is_string($panel)) {
+                return $panel;
+            }
+            $panels[] = $panel;
+        }
+
+        return $panels;
+    }
+
+    /**
+     * @param array<string, mixed> $p
+     * @return array<string, mixed>|string
+     */
+    private static function normaliseStatsPanel(string $pid, string $title, string $description, array $p, ExtensionContext $ctx): array|string
+    {
+        $source = self::validateAdminRouteRef((string) ($p['source'] ?? ''), 'GET', $ctx, true);
+        if ($source === null) {
+            return "Panel \"{$pid}\" source must match an admin GET route registered by this extension.";
+        }
+        $items = [];
+        if (isset($p['items'])) {
+            if (!is_array($p['items']) || !array_is_list($p['items']) || count($p['items']) > self::MAX_COLUMNS) {
+                return "Panel \"{$pid}\" items must be a list of at most " . self::MAX_COLUMNS . ' entries.';
+            }
+            foreach ($p['items'] as $item) {
+                $col = self::normaliseColumn($item);
+                if (is_string($col)) {
+                    return "Panel \"{$pid}\": {$col}";
+                }
+                $items[] = $col;
+            }
+        }
+        return [
+            'id' => $pid,
+            'title' => $title,
+            'description' => $description,
+            'type' => 'stats',
+            'source' => $source,
+            'items' => $items,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $p
+     * @return array<string, mixed>|string
+     */
+    private static function normaliseTablePanel(string $pid, string $title, string $description, array $p, ExtensionContext $ctx): array|string
+    {
+        $source = self::validateAdminRouteRef((string) ($p['source'] ?? ''), 'GET', $ctx, true);
+        if ($source === null) {
+            return "Panel \"{$pid}\" source must match an admin GET route registered by this extension.";
+        }
+        $rawCols = $p['columns'] ?? null;
+        if (!is_array($rawCols) || !array_is_list($rawCols) || count($rawCols) === 0 || count($rawCols) > self::MAX_COLUMNS) {
+            return "Panel \"{$pid}\" columns must contain 1–" . self::MAX_COLUMNS . ' entries.';
+        }
+        $columns = [];
+        foreach ($rawCols as $c) {
+            $col = self::normaliseColumn($c);
+            if (is_string($col)) {
+                return "Panel \"{$pid}\": {$col}";
+            }
+            $columns[] = $col;
+        }
+
+        $itemsKey = (string) ($p['itemsKey'] ?? 'items');
+        if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/', $itemsKey)) {
+            return "Panel \"{$pid}\" itemsKey is invalid.";
+        }
+        $rowKey = (string) ($p['rowKey'] ?? '');
+        if ($rowKey !== '' && !preg_match('/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/', $rowKey)) {
+            return "Panel \"{$pid}\" rowKey is invalid.";
+        }
+        $emptyMessage = trim((string) ($p['emptyMessage'] ?? 'No items.'));
+        if (mb_strlen($emptyMessage) > 160) {
+            return "Panel \"{$pid}\" emptyMessage must be at most 160 characters.";
+        }
+
+        $actions = [];
+        if (isset($p['actions'])) {
+            if (!is_array($p['actions']) || !array_is_list($p['actions']) || count($p['actions']) > self::MAX_ACTIONS) {
+                return "Panel \"{$pid}\" actions must be a list of at most " . self::MAX_ACTIONS . ' actions.';
+            }
+            foreach ($p['actions'] as $a) {
+                $act = self::normaliseAction($a, $ctx);
+                if (is_string($act)) {
+                    return "Panel \"{$pid}\": {$act}";
+                }
+                $actions[] = $act;
+            }
+        }
+
+        return [
+            'id' => $pid,
+            'title' => $title,
+            'description' => $description,
+            'type' => 'table',
+            'source' => $source,
+            'itemsKey' => $itemsKey,
+            'rowKey' => $rowKey,
+            'emptyMessage' => $emptyMessage,
+            'columns' => $columns,
+            'actions' => $actions,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $p
+     * @return array<string, mixed>|string
+     */
+    private static function normaliseFormPanel(string $pid, string $title, string $description, array $p, ExtensionContext $ctx): array|string
+    {
+        $method = strtoupper((string) ($p['method'] ?? 'POST'));
+        if (!in_array($method, self::ACTION_METHODS, true)) {
+            return "Panel \"{$pid}\" form method must be POST or DELETE.";
+        }
+        $path = self::validateAdminRouteRef((string) ($p['path'] ?? ''), $method, $ctx, false);
+        if ($path === null) {
+            return "Panel \"{$pid}\" path must match an admin {$method} route registered by this extension.";
+        }
+        $submitLabel = trim((string) ($p['submitLabel'] ?? 'Submit'));
+        if ($submitLabel === '' || mb_strlen($submitLabel) > 40) {
+            return "Panel \"{$pid}\" submitLabel must be 1–40 characters.";
+        }
+        $confirm = trim((string) ($p['confirm'] ?? ''));
+        if (mb_strlen($confirm) > 200) {
+            return "Panel \"{$pid}\" confirm must be at most 200 characters.";
+        }
+        $rawFields = $p['fields'] ?? null;
+        if (!is_array($rawFields) || !array_is_list($rawFields) || count($rawFields) === 0 || count($rawFields) > self::MAX_FIELDS) {
+            return "Panel \"{$pid}\" fields must contain 1–" . self::MAX_FIELDS . ' entries.';
+        }
+        $fields = [];
+        foreach ($rawFields as $f) {
+            if (!is_array($f)) {
+                return "Panel \"{$pid}\" field must be an object.";
+            }
+            $fname = (string) ($f['name'] ?? '');
+            if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_-]{0,40}$/', $fname)) {
+                return "Panel \"{$pid}\" has invalid field name.";
+            }
+            $flabel = trim((string) ($f['label'] ?? ''));
+            if ($flabel === '' || mb_strlen($flabel) > 60) {
+                return "Panel \"{$pid}\" field \"{$fname}\" label must be 1–60 characters.";
+            }
+            $placeholder = trim((string) ($f['placeholder'] ?? ''));
+            if (mb_strlen($placeholder) > 100) {
+                return "Panel \"{$pid}\" field \"{$fname}\" placeholder is too long.";
+            }
+            $fields[] = [
+                'name' => $fname,
+                'label' => $flabel,
+                'placeholder' => $placeholder,
+                'required' => !empty($f['required']),
+            ];
+        }
+
+        return [
+            'id' => $pid,
+            'title' => $title,
+            'description' => $description,
+            'type' => 'form',
+            'method' => $method,
+            'path' => $path,
+            'submitLabel' => $submitLabel,
+            'confirm' => $confirm,
+            'fields' => $fields,
+        ];
+    }
+
+    /**
+     * @return array{key: string, label: string, as: string}|string
+     */
+    private static function normaliseColumn(mixed $raw): array|string
+    {
+        if (!is_array($raw)) {
+            return 'column must be an object.';
+        }
+        $key = (string) ($raw['key'] ?? '');
+        if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_.-]{0,39}$/', $key)) {
+            return 'column key is invalid.';
+        }
+        $label = trim((string) ($raw['label'] ?? ''));
+        if ($label === '' || mb_strlen($label) > 40) {
+            return "column \"{$key}\" label must be 1–40 characters.";
+        }
+        $as = (string) ($raw['as'] ?? 'text');
+        if (!in_array($as, self::COLUMN_RENDERERS, true)) {
+            return "column \"{$key}\" renderer \"{$as}\" is not supported.";
+        }
+        return ['key' => $key, 'label' => $label, 'as' => $as];
+    }
+
+    /**
+     * @return array<string, mixed>|string
+     */
+    private static function normaliseAction(mixed $raw, ExtensionContext $ctx): array|string
+    {
+        if (!is_array($raw)) {
+            return 'action must be an object.';
+        }
+        $label = trim((string) ($raw['label'] ?? ''));
+        if ($label === '' || mb_strlen($label) > 40) {
+            return 'action label must be 1–40 characters.';
+        }
+        $method = strtoupper((string) ($raw['method'] ?? 'POST'));
+        if (!in_array($method, self::ACTION_METHODS, true)) {
+            return "action \"{$label}\" method must be POST or DELETE.";
+        }
+        $path = self::validateAdminRouteRef((string) ($raw['path'] ?? ''), $method, $ctx, false);
+        if ($path === null) {
+            return "action \"{$label}\" path must match an admin {$method} route registered by this extension.";
+        }
+        $body = null;
+        if (array_key_exists('body', $raw) && $raw['body'] !== null) {
+            if (!is_array($raw['body']) || (count($raw['body']) > 0 && array_is_list($raw['body']))) {
+                return "action \"{$label}\" body must be a JSON object.";
+            }
+            $body = $raw['body'];
+        }
+        $when = null;
+        if (isset($raw['when']) && $raw['when'] !== null) {
+            if (!is_array($raw['when']) || !is_string($raw['when']['key'] ?? null) || !array_key_exists('equals', $raw['when'])) {
+                return "action \"{$label}\" when must have key and equals.";
+            }
+            $eq = $raw['when']['equals'];
+            if (!is_scalar($eq) && $eq !== null) {
+                return "action \"{$label}\" when.equals must be a scalar or null.";
+            }
+            $when = ['key' => $raw['when']['key'], 'equals' => $eq];
+        }
+        $confirm = trim((string) ($raw['confirm'] ?? ''));
+        if (mb_strlen($confirm) > 200) {
+            return "action \"{$label}\" confirm must be at most 200 characters.";
+        }
+        $style = (string) ($raw['style'] ?? 'default');
+        if (!in_array($style, ['default', 'danger'], true)) {
+            return "action \"{$label}\" style must be default or danger.";
+        }
+
+        return [
+            'label' => $label,
+            'method' => $method,
+            'path' => $path,
+            'body' => $body,
+            'when' => $when,
+            'confirm' => $confirm,
+            'style' => $style,
+        ];
+    }
+
+    /**
+     * Checks that a manifest route reference (e.g. `v1/admin/games` or `v1/admin/games/{slug}/enabled`)
+     * matches a route registered by this extension with `admin === true` and the expected HTTP method.
+     */
+    private static function validateAdminRouteRef(string $rawRef, string $method, ExtensionContext $ctx, bool $allowQuery): ?string
+    {
+        $ref = trim($rawRef);
+        if ($ref === '' || strlen($ref) > 160 || str_starts_with($ref, '/') || str_contains($ref, '..')) {
+            return null;
+        }
+        $pathPart = $ref;
+        $queryPart = '';
+        if (str_contains($ref, '?')) {
+            if (!$allowQuery) {
+                return null;
+            }
+            [$pathPart, $queryPart] = explode('?', $ref, 2);
+            if ($queryPart === '' || !preg_match('/^[A-Za-z0-9._=&%-]+$/', $queryPart)) {
+                return null;
+            }
+        }
+        $pathPart = trim($pathPart, '/');
+        if (!preg_match('#^v[0-9]+(/[A-Za-z0-9._{}-]+)*$#', $pathPart)) {
+            return null;
+        }
+
+        foreach ($ctx->routes as $route) {
+            if ($route['admin'] !== true || $route['method'] !== $method) {
+                continue;
+            }
+            if ($route['pattern'] === $pathPart) {
+                return $queryPart !== '' ? ($pathPart . '?' . $queryPart) : $pathPart;
+            }
+            // Also allow matching segment-for-segment when placeholders match registered `{param}` slots
+            $regSegs = explode('/', $route['pattern']);
+            $refSegs = explode('/', $pathPart);
+            if (count($regSegs) === count($refSegs)) {
+                $matched = true;
+                for ($i = 0; $i < count($regSegs); $i++) {
+                    $rs = $regSegs[$i];
+                    $qs = $refSegs[$i];
+                    $isRegParam = preg_match('/^\{[a-zA-Z][a-zA-Z0-9]*\}$/', $rs) === 1;
+                    if ($isRegParam) {
+                        if ($qs === '') {
+                            $matched = false;
+                            break;
+                        }
+                    } elseif ($rs !== $qs) {
+                        $matched = false;
+                        break;
+                    }
+                }
+                if ($matched) {
+                    return $queryPart !== '' ? ($pathPart . '?' . $queryPart) : $pathPart;
+                }
+            }
+        }
+
+        return null;
     }
 }

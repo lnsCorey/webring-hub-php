@@ -1,7 +1,7 @@
 {
   "id": "key-witness",
   "name": "Key Witness",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "class": "WebringHub\\Ext\\KeyWitness\\KeyWitnessExtension",
   "description": "Keeps a history of the signing keys this hub has seen for each listed site, so Webring Studio can compare a friend's key with an independent observer.",

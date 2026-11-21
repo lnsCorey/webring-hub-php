@@ -505,7 +505,10 @@ try {
 
         if ($pathname === '/api/admin/extensions') {
             requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
-            sendJson(200, ['extensions' => $extensions->adminList()], [], $headOnly);
+            sendJson(200, [
+                'extensions' => $extensions->adminList(),
+                'available' => $extensions->availableList(),
+            ], [], $headOnly);
         }
 
         // Every entry whatever its status, with the operator-only fields from toAdminEntry.

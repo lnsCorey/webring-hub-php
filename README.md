@@ -267,7 +267,7 @@ When `maintainerBadge` is `true` and the maintainer's site (`maintainerUrl` / `m
 | `POST /api/admin/entries/:did/trust-key` | Accept the new signing key recorded when the site's key changed without a rotation certificate. Body: `{"expectedFingerprint":"<candidateFingerprint you reviewed>"}`. Refused with `400` without it, `409 no_candidate` when no new key is waiting, `409 candidate_mismatch` when it names a different key, and `409 served_key_changed` when the site no longer serves that key. Confirm the fingerprint with the owner first *(Bearer `admin_token`)* |
 | `DELETE /api/admin/entries/:did` | Delete an entry immediately. A blocked site stays blocked *(Bearer `admin_token`)* |
 | `DELETE /api/admin/blocked/:did` | Lift a block whose listing is gone, so the owner can list the site again. `404` when it isn't blocked *(Bearer `admin_token`)* |
-| `GET /api/admin/extensions` | Enabled extensions: loaded or not, version, schema version, routes, events, load errors *(Bearer `admin_token`)* |
+| `GET /api/admin/extensions` | Enabled extensions (`extensions`: loaded or not, version, schema version, kind, declarative admin panels, `uiError`, routes, events, load errors) plus `available` (installed but not enabled folders with ready-to-paste `config.php` lines) *(Bearer `admin_token`)* |
 | `GET /api/ext/key-witness/v1/keys/:did` | *(key-witness extension)* The current key fingerprint for an active entry and the history of keys seen (`first-seen`, `rotated`, `operator-accepted`, `rejected`) |
 | `GET /api/healthz` | Health check (`{"ok":true}`) |
 

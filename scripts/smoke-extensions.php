@@ -91,7 +91,14 @@ check(($byId['key-witness']['loaded'] ?? false) === true, 'key-witness loads');
 check(($byId['key-witness']['schemaVersion'] ?? 0) === 1, 'key-witness migrated to schema 1');
 check(($byId['does-not-exist']['loaded'] ?? true) === false && !empty($byId['does-not-exist']['error']), 'a missing extension is reported, not fatal');
 check(($byId['Bad_Id']['loaded'] ?? true) === false, 'an invalid id is refused');
-check($ext->publicList() === [['id' => 'key-witness', 'version' => '1.0.0', 'apiVersion' => 1]], '/api/info lists only loaded extensions');
+$pubList = $ext->publicList();
+check(
+    count($pubList) === 1
+    && ($pubList[0]['id'] ?? '') === 'key-witness'
+    && ($pubList[0]['apiVersion'] ?? 0) === 1
+    && !isset($pubList[0]['ui']),
+    '/api/info lists only loaded extensions (and no public card for key-witness)'
+);
 check($ext->match('GET', '/api/ext/key-witness/v2/keys/x') === null, 'unknown route version does not match');
 check($ext->match('POST', '/api/ext/key-witness/v1/keys/x') === null, 'wrong method does not match');
 
