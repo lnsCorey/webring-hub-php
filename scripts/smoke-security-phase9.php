@@ -177,5 +177,14 @@ check(
     'admin.js api() sends {} as JSON for a POST with no body (Refresh now returned 415 before)'
 );
 
+echo "Static scripts and styles are revalidated, not cached for a week\n";
+// The host adds a 7-day expiry to files Apache serves directly, so an old admin.js stayed in browsers.
+// php -S doesn't read .htaccess, so this checks the rule is present; verify it live with curl -I.
+$htaccess = str_replace("\r\n", "\n", (string) file_get_contents(__DIR__ . '/../public/.htaccess'));
+check(
+    preg_match('/<FilesMatch "\\\\\\.\\(js\\|css\\)\\$">\s*Header always set Cache-Control "no-cache"\s*Header always unset Expires\s*<\\/FilesMatch>/', $htaccess) === 1,
+    'public/.htaccess sets Cache-Control: no-cache and drops Expires for .js and .css'
+);
+
 echo $failures === 0 ? "all phase 9 checks passed\n" : "{$failures} phase 9 check(s) FAILED\n";
 exit($failures === 0 ? 0 : 1);
