@@ -537,6 +537,7 @@ try {
                 'hubUrl' => $meta['directoryUrl'],
                 'ipSaltInDatabase' => Database::ipSaltInDatabase(),
                 'maintenance' => Database::maintenanceStatus($pdo),
+                'blockedWithoutListing' => Database::blockedSitesWithoutListing($pdo),
             ], [], $headOnly);
         }
 
@@ -567,7 +568,11 @@ try {
             $normalizedInputUrl = Verify::normalizeSiteUrl($body['siteUrl']);
             $existingBySite = $normalizedInputUrl !== '' ? Database::getEntryBySiteUrl($pdo, $normalizedInputUrl) : null;
             $existingByDid = $normalizedInputUrl !== '' ? Database::getEntryByDid($pdo, Verify::siteUrlToDidWeb($normalizedInputUrl)) : null;
-            if (($existingBySite['status'] ?? '') === 'blocked' || ($existingByDid['status'] ?? '') === 'blocked') {
+            if (
+                ($existingBySite['status'] ?? '') === 'blocked'
+                || ($existingByDid['status'] ?? '') === 'blocked'
+                || ($normalizedInputUrl !== '' && Database::isBlocked($pdo, Verify::siteUrlToDidWeb($normalizedInputUrl), $normalizedInputUrl))
+            ) {
                 throw new AppError(403, 'entry_blocked', 'This site is blocked in this hub. Contact the operator.');
             }
             if ($existingBySite === null && $normalizedInputUrl !== '') {
@@ -814,6 +819,17 @@ try {
     }
 
     if ($method === 'DELETE') {
+        // Lift a block whose listing is gone (a still-listed blocked site is unblocked by
+        // setting its status to active)
+        if (preg_match('#^/api/admin/blocked/([^/]+)$#', $pathname, $matches)) {
+            requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
+            if (!Database::unblockSite($pdo, decodeParam($matches[1]))) {
+                throw new AppError(404, 'not_found', 'That site is not blocked.');
+            }
+            http_response_code(204);
+            setCommonHeaders();
+            exit;
+        }
         if (preg_match('#^/api/admin/entries/([^/]+)$#', $pathname, $matches)) {
             requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
             $did = decodeParam($matches[1]);

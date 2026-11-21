@@ -255,6 +255,16 @@ final class Database
     /** Setting-key prefix under which a failed migration's error is kept for the admin page. */
     private const MIGRATION_ERROR_PREFIX = 'migration_error:';
 
+    /**
+     * Bump this whenever a migration's code changes (a fix to a step that failed on some
+     * installs). Failed migrations are retried once automatically when the deployed code's
+     * version differs from the one recorded, so an upgrade repairs what the old code broke.
+     */
+    public const MIGRATION_CODE_VERSION = '2026-11-21';
+
+    /** Setting key holding the MIGRATION_CODE_VERSION that last ran the migrations. */
+    private const MIGRATION_CODE_VERSION_KEY = 'migrations:code_version';
+
     /** Setting key holding look-alike rows that block the MySQL collation migration. */
     public const COLLATION_CONFLICTS_KEY = 'maintenance:collation_conflicts';
 
@@ -277,12 +287,20 @@ final class Database
         foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $key) {
             $failed[substr((string) $key, strlen(self::MIGRATION_ERROR_PREFIX))] = true;
         }
+        // New code since the last run: give earlier failures one more try, since the new code
+        // may have fixed the step (for example the MySQL fix for 2026_11_registrable_domain)
+        $versionStmt = $pdo->prepare('SELECT `value` FROM settings WHERE `key` = ?');
+        $versionStmt->execute([self::MIGRATION_CODE_VERSION_KEY]);
+        $codeChanged = $versionStmt->fetchColumn() !== self::MIGRATION_CODE_VERSION;
 
         foreach (self::migrations($driver) as $id => $up) {
-            if (isset($applied[$id]) || (isset($failed[$id]) && !$retryFailed)) {
+            if (isset($applied[$id]) || (isset($failed[$id]) && !$retryFailed && !$codeChanged)) {
                 continue;
             }
             self::runMigration($pdo, $id, $up);
+        }
+        if ($codeChanged) {
+            self::upsertSetting($pdo, self::MIGRATION_CODE_VERSION_KEY, self::MIGRATION_CODE_VERSION, self::isoNow());
         }
     }
 
@@ -404,6 +422,37 @@ final class Database
                 $clear->execute([self::COLLATION_CONFLICTS_KEY]);
             };
         }
+
+        // Blocks that survive the listing being deleted (by the owner's signed self-removal or
+        // by the operator), so a blocked site can't come back by removing itself and re-listing.
+        $steps['2026_11_blocked_sites'] = static function (PDO $pdo) use ($isSqlite): void {
+            if ($isSqlite) {
+                $pdo->exec("
+                    CREATE TABLE IF NOT EXISTS blocked_sites (
+                      did TEXT NOT NULL PRIMARY KEY,
+                      site_url TEXT NOT NULL,
+                      reason TEXT NOT NULL DEFAULT '',
+                      blocked_at TEXT NOT NULL
+                    )
+                ");
+                $pdo->exec('CREATE INDEX IF NOT EXISTS idx_blocked_sites_site_url ON blocked_sites (site_url)');
+                $pdo->exec("INSERT OR IGNORE INTO blocked_sites (did, site_url, reason, blocked_at)
+                    SELECT did, site_url, 'blocked before this upgrade', updated_at FROM entries WHERE status = 'blocked'");
+                return;
+            }
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS blocked_sites (
+                  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                  site_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                  reason VARCHAR(500) NOT NULL DEFAULT '',
+                  blocked_at VARCHAR(40) NOT NULL,
+                  PRIMARY KEY (did),
+                  KEY idx_blocked_sites_site_url (site_url)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+            ");
+            $pdo->exec("INSERT IGNORE INTO blocked_sites (did, site_url, reason, blocked_at)
+                SELECT did, site_url, 'blocked before this upgrade', updated_at FROM entries WHERE status = 'blocked'");
+        };
 
         return $steps;
     }
@@ -1097,7 +1146,60 @@ final class Database
     {
         $stmt = $pdo->prepare('DELETE FROM entries WHERE did = ?');
         $stmt->execute([$did]);
+        $deleted = $stmt->rowCount() > 0;
+        if ($deleted) {
+            // A candidate key belongs to the listing; it must not outlive it (re-listing starts clean).
+            // The block list is kept on purpose: see blockSite().
+            $pdo->prepare('DELETE FROM key_candidates WHERE did = ?')->execute([$did]);
+        }
+        return $deleted;
+    }
+
+    /**
+     * Records a block that outlives the listing: the site can't be re-submitted while it's here,
+     * even after the listing is deleted. Only an operator's unblock removes it.
+     */
+    public static function blockSite(PDO $pdo, string $did, string $siteUrl, string $reason = '', ?string $now = null): void
+    {
+        $pdo->prepare('DELETE FROM blocked_sites WHERE did = ?')->execute([$did]);
+        $pdo->prepare('INSERT INTO blocked_sites (did, site_url, reason, blocked_at) VALUES (?, ?, ?, ?)')
+            ->execute([$did, $siteUrl, self::cleanSingleLine($reason, 500), $now ?? self::isoNow()]);
+    }
+
+    /** Lifts a block. Returns true when there was one. */
+    public static function unblockSite(PDO $pdo, string $did): bool
+    {
+        $stmt = $pdo->prepare('DELETE FROM blocked_sites WHERE did = ?');
+        $stmt->execute([$did]);
         return $stmt->rowCount() > 0;
+    }
+
+    /** True when the site (by DID or by normalised site URL) is on the block list. */
+    public static function isBlocked(PDO $pdo, string $did, string $siteUrl): bool
+    {
+        $stmt = $pdo->prepare('SELECT 1 FROM blocked_sites WHERE did = ? OR site_url = ? LIMIT 1');
+        $stmt->execute([$did, $siteUrl]);
+        return $stmt->fetchColumn() !== false;
+    }
+
+    /**
+     * Blocked sites with no listing left (deleted by their owner or the operator), for the admin
+     * page, where each can be unblocked. Blocked sites that are still listed show in the table.
+     *
+     * @return list<array{did: string, siteUrl: string, reason: string, blockedAt: string}>
+     */
+    public static function blockedSitesWithoutListing(PDO $pdo): array
+    {
+        $rows = $pdo->query(
+            'SELECT b.did, b.site_url, b.reason, b.blocked_at FROM blocked_sites b
+             LEFT JOIN entries e ON e.did = b.did WHERE e.did IS NULL ORDER BY b.blocked_at DESC LIMIT 200'
+        )->fetchAll();
+        return array_map(static fn (array $r): array => [
+            'did' => (string) $r['did'],
+            'siteUrl' => (string) $r['site_url'],
+            'reason' => (string) $r['reason'],
+            'blockedAt' => (string) $r['blocked_at'],
+        ], $rows);
     }
 
     public static function setEntryStatus(PDO $pdo, string $did, string $status, ?string $now = null): bool
