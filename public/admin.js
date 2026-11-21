@@ -403,7 +403,7 @@ function renderRow(entry) {
   if (entry.keyChanged) {
     addButton('Review new key', 'trust', { title: 'Compare fingerprints and decide whether to trust the new key' });
   }
-  addButton('Delete', 'delete', { danger: true });
+  addButton(status === 'blocked' ? 'Delete listing (stays blocked)' : 'Delete', 'delete', { danger: true });
   actions.append(group);
 
   const note = state.rowMessages.get(entry.did);
@@ -428,7 +428,9 @@ async function runAction(entry, action) {
   }
   if (action === 'delete') {
     const ok = window.confirm(
-      `Delete ${label} (${did}) from this hub?\n\nThe entry and any extension data for it are removed. The owner can list the site again by re-submitting it; block it instead to keep it out.`
+      entry.status === 'blocked'
+        ? `Delete the listing for ${label} (${did})?\n\nThe site stays blocked: its owner can't submit it again. Unblock it later from the "blocked sites" notice if you change your mind.`
+        : `Delete ${label} (${did}) from this hub?\n\nThe entry and any extension data for it are removed. The owner can list the site again by re-submitting it; block it instead to keep it out.`
     );
     if (!ok) return;
   }
@@ -607,6 +609,43 @@ function renderNotices(status) {
     });
     parts.push(retry);
     items.push(notice('error', 'Database maintenance needed', ...parts));
+  }
+
+  const blocked = Array.isArray(status.blockedWithoutListing) ? status.blockedWithoutListing : [];
+  if (blocked.length) {
+    const ul = element('ul');
+    for (const site of blocked) {
+      const li = element('li', null);
+      li.append(element('span', 'admin-mono', `${site.siteUrl || site.did}`), ' ');
+      const unblock = element('button', 'admin-button admin-button-sm', 'Unblock');
+      unblock.type = 'button';
+      unblock.setAttribute('aria-label', `Unblock ${site.siteUrl || site.did}`);
+      unblock.addEventListener('click', async () => {
+        if (!window.confirm(`Unblock ${site.siteUrl || site.did}?\n\nIts owner will be able to list it again.`)) return;
+        unblock.disabled = true;
+        try {
+          await api(`/api/admin/blocked/${encodeURIComponent(site.did)}`, { method: 'DELETE' });
+          setMessage(els.listStatus, `${site.siteUrl || site.did}: unblocked.`, 'success');
+        } catch (err) {
+          setMessage(els.listStatus, err.message || 'Unblocking failed.', 'error');
+        }
+        await loadStatus();
+      });
+      li.append(unblock);
+      ul.append(li);
+    }
+    items.push(
+      notice(
+        'info',
+        `${blocked.length} blocked site(s) with no listing`,
+        element(
+          'p',
+          null,
+          'These sites stay blocked after their listing was deleted (by you, or by the owner removing it), so they can\'t be submitted again. Unblock one to let its owner list it again.'
+        ),
+        ul
+      )
+    );
   }
 
   if (status.ipSaltInDatabase) {

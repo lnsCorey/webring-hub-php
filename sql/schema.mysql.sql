@@ -75,3 +75,13 @@ CREATE TABLE IF NOT EXISTS key_candidates (
   conflict TINYINT(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (did)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Blocks that outlive a deleted listing, so a blocked site can't re-list itself (security phase 9).
+CREATE TABLE IF NOT EXISTS blocked_sites (
+  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  site_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  reason VARCHAR(500) NOT NULL DEFAULT '',
+  blocked_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (did),
+  KEY idx_blocked_sites_site_url (site_url)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

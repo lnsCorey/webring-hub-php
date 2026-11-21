@@ -51,6 +51,8 @@ $config = Config::load([
     'sqlite_path' => $dbPath,
     'db' => ['driver' => 'sqlite', 'sqlite_path' => $dbPath],
     'extensions' => ['key-witness', 'does-not-exist', 'Bad_Id'],
+    // Forced on: the operator's config.php may turn it off for the live database
+    'auto_migrate' => true,
 ]);
 $pdo = Database::open($config);
 

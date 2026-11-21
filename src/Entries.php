@@ -105,6 +105,14 @@ final class Entries
         if (!Database::setEntryStatus($pdo, $did, $status)) {
             return false;
         }
+        // The block list outlives the listing, so a blocked site can't return by deleting itself
+        // and re-submitting. Only making the entry active again (Unblock) lifts it.
+        if ($status === 'blocked') {
+            $row = Database::getEntryByDid($pdo, $did);
+            Database::blockSite($pdo, $did, $row !== null ? (string) $row['site_url'] : '', 'blocked by the operator');
+        } elseif ($status === 'active') {
+            Database::unblockSite($pdo, $did);
+        }
         $ext->emit('entry.status_changed', ['did' => $did, 'status' => $status]);
         return true;
     }
