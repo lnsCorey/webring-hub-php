@@ -69,6 +69,12 @@ echo "loader & static files\n";
 check($ext->isLoaded('arcade'), 'arcade extension loads');
 $adminInfo = $ext->adminList()[0] ?? [];
 check(($adminInfo['schemaVersion'] ?? 0) === 2, 'arcade migrated to schema 2');
+check(($adminInfo['kind'] ?? '') === 'both' && ($adminInfo['uiError'] ?? null) === null, 'arcade manifest validates as kind=both');
+check(count($adminInfo['panels'] ?? []) === 2, 'arcade declares 2 admin panels (Games + Remove a player)');
+$pubInfo = $ext->publicList()[0] ?? [];
+check(($pubInfo['ui']['public']['art'] ?? '') === '/ext/arcade/card.svg' && ($pubInfo['ui']['public']['accent'] ?? '') === 'magenta', 'arcade exposes carousel card in publicList');
+$cardSvg = $ext->resolvePublicFile('/ext/arcade/card.svg');
+check($cardSvg !== null && str_contains($cardSvg['headers']['Content-Security-Policy'] ?? '', "default-src 'none'"), 'card.svg resolves with restrictive SVG CSP');
 check(in_array('/ext/arcade/', $adminInfo['public'] ?? [], true), 'adminList reports /ext/arcade/ public mount');
 
 $landing = $ext->resolvePublicFile('/ext/arcade/');

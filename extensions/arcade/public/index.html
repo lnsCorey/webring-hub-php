@@ -51,18 +51,18 @@
     </section>
 
     <section id="detail-view" class="panel hidden">
-      <div class="player-bar" style="justify-content: space-between;">
-        <h2 id="detail-title" style="margin: 0;"></h2>
-        <div style="display: flex; gap: 0.5rem;">
-          <button id="play-start-btn" class="btn btn-primary" type="button">▶ Play Now</button>
+      <div class="player-bar player-bar-between">
+        <h2 id="detail-title" class="detail-title"></h2>
+        <div class="detail-actions">
+          <button id="play-start-btn" class="btn btn-primary" type="button">▶ 1P START</button>
           <button id="detail-close-btn" class="btn" type="button">Back to Games</button>
         </div>
       </div>
-      <p id="detail-desc" class="notice" style="font-size: 0.95rem;"></p>
-      <div id="detail-controls" class="tags" style="margin: 0.75rem 0;"></div>
+      <p id="detail-desc" class="notice detail-desc"></p>
+      <div id="detail-controls" class="tags detail-controls"></div>
 
       <div id="play-container" class="hidden">
-        <div class="player-bar" style="justify-content: space-between; margin-top: 0.75rem;">
+        <div class="player-bar player-bar-between play-bar">
           <span id="session-status" class="status-pill status-ok">Session Ready</span>
           <button id="play-stop-btn" class="btn btn-danger" type="button">Exit Game</button>
         </div>
@@ -80,7 +80,7 @@
       </div>
 
       <div class="leaderboard-head">
-        <h3>Leaderboard</h3>
+        <h3>High Scores</h3>
         <label class="filter-toggle" for="verified-only">
           <input id="verified-only" type="checkbox" />
           Verified only
@@ -89,7 +89,7 @@
       <table>
         <thead>
           <tr>
-            <th>#</th>
+            <th>Rank</th>
             <th>Player</th>
             <th>Score</th>
             <th>When</th>
@@ -100,8 +100,8 @@
     </section>
 
     <section id="history-view" class="panel hidden">
-      <div class="player-bar" style="justify-content: space-between;">
-        <h2 style="margin: 0;">Player History</h2>
+      <div class="player-bar player-bar-between">
+        <h2 class="detail-title">Player History</h2>
         <button id="history-close-btn" class="btn" type="button">Close</button>
       </div>
       <h3>Personal Bests</h3>
@@ -111,7 +111,7 @@
         </thead>
         <tbody id="history-bests-body"></tbody>
       </table>
-      <h3 style="margin-top: 1.25rem;">Recent Runs</h3>
+      <h3 class="section-heading-sp">Recent Runs</h3>
       <table>
         <thead>
           <tr><th>Game</th><th>Score</th><th>Duration</th><th>Finished</th></tr>

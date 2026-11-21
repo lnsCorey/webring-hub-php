@@ -102,14 +102,22 @@
     }
     games.forEach((game) => {
       const card = make('article', 'card');
+
+      const marquee = make('div', 'card-marquee');
+      marquee.appendChild(make('h3', 'card-title', game.title));
+      marquee.appendChild(make('span', 'card-attract', 'INSERT COIN'));
+      card.appendChild(marquee);
+
       if (game.thumbnailUrl) {
+        const screen = make('div', 'card-screen');
         const img = make('img', 'card-thumb');
         img.src = `../..${game.thumbnailUrl}`;
         img.alt = game.title;
-        card.appendChild(img);
+        screen.appendChild(img);
+        card.appendChild(screen);
       }
+
       const body = make('div', 'card-body');
-      body.appendChild(make('h3', 'card-title', game.title));
       body.appendChild(make('p', 'notice', game.description));
 
       const tagRow = make('div', 'tags');
@@ -117,11 +125,11 @@
       body.appendChild(tagRow);
 
       const topText = game.stats?.topScore
-        ? `High Score: ${game.stats.topScore.score} (${game.stats.topScore.displayName})`
-        : 'No scores yet';
-      body.appendChild(make('div', 'notice', `${topText} • ${game.stats?.plays || 0} plays`));
+        ? `HI-SCORE: ${game.stats.topScore.score} (${game.stats.topScore.displayName})`
+        : 'NO SCORES YET';
+      body.appendChild(make('div', 'notice', `${topText} • ${game.stats?.plays || 0} PLAYS`));
 
-      const btn = make('button', 'btn btn-primary', 'View & Play');
+      const btn = make('button', 'btn btn-primary', '▶ 1P START');
       btn.type = 'button';
       btn.addEventListener('click', () => openGameDetail(game.slug));
       body.appendChild(btn);
