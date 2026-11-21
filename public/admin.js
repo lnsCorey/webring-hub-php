@@ -2,6 +2,8 @@
 // in this tab's sessionStorage and is sent as a Bearer header, never in a URL. Listing data comes
 // from third-party sites, so it is only ever rendered with textContent.
 
+import { kindBadgeLabel, mountExtensionPanels } from './admin-panels.js';
+
 const TOKEN_KEY = 'webring-hub-admin-token';
 const PAGE_SIZE = 50;
 const STATUSES = ['active', 'blocked', 'stale'];
@@ -36,6 +38,8 @@ const els = {
   settingsMessage: $('settings-message'),
   extList: $('ext-list'),
   extMessage: $('ext-message'),
+  extPanelsSection: $('ext-panels-section'),
+  extPanels: $('ext-panels'),
   notices: $('admin-notices'),
   keyDialog: $('key-dialog'),
   keyDialogSite: $('key-dialog-site'),
@@ -208,6 +212,8 @@ function signOut(message, kind) {
   els.signinPanel.hidden = false;
   els.body.replaceChildren();
   els.extList.replaceChildren();
+  els.extPanels.replaceChildren();
+  els.extPanelsSection.hidden = true;
   els.notices.replaceChildren();
   els.notices.hidden = true;
   if (els.keyDialog.open) els.keyDialog.close();
@@ -239,7 +245,10 @@ async function signIn(token) {
     showSignedIn();
     setMessage(els.signinMessage, '');
     els.token.value = '';
-    renderExtensions(Array.isArray(data.extensions) ? data.extensions : []);
+    const enabledExts = Array.isArray(data.extensions) ? data.extensions : [];
+    const availableExts = Array.isArray(data.available) ? data.available : [];
+    renderExtensions(enabledExts, availableExts);
+    mountExtensionPanels(els.extPanelsSection, els.extPanels, enabledExts, api);
     loadEntries();
     loadSettings();
     loadStatus();
@@ -824,49 +833,88 @@ els.settingsForm.addEventListener('submit', async (event) => {
 
 // ---- extensions ----
 
-function renderExtensions(list) {
+function renderExtensions(list, available = []) {
   els.extList.replaceChildren();
   if (!list.length) {
     els.extList.append(element('p', null, 'No extensions are enabled.'));
-    return;
-  }
-  for (const ext of list) {
-    const box = element('div', 'admin-ext');
-    const head = element('div', 'admin-ext-head');
-    head.append(element('strong', null, ext.name || ext.id));
-    head.append(element('code', null, ext.id));
-    head.append(element('span', `admin-badge ${ext.loaded ? 'admin-badge-active' : 'admin-badge-blocked'}`, ext.loaded ? 'loaded' : 'not loaded'));
-    box.append(head);
+  } else {
+    for (const ext of list) {
+      const box = element('div', 'admin-ext');
+      const head = element('div', 'admin-ext-head');
+      head.append(element('strong', null, ext.name || ext.id));
+      head.append(element('code', null, ext.id));
+      head.append(element('span', `admin-badge ${ext.loaded ? 'admin-badge-active' : 'admin-badge-blocked'}`, ext.loaded ? 'loaded' : 'not loaded'));
+      if (ext.loaded) {
+        const kind = ext.kind || 'headless';
+        head.append(element('span', `admin-badge admin-badge-kind-${kind}`, kindBadgeLabel(kind)));
+      }
+      box.append(head);
 
-    if (ext.loaded) {
-      box.append(
-        element('p', 'admin-sub', `Version ${ext.version || '?'} · API v${ext.apiVersion} · schema ${ext.schemaVersion}`)
-      );
-      const routes = Array.isArray(ext.routes) ? ext.routes : [];
-      const events = Array.isArray(ext.events) ? ext.events : [];
-      if (routes.length) {
-        box.append(element('p', 'admin-ext-label', 'Routes'));
-        const ul = element('ul', 'admin-ext-items');
-        for (const route of routes) {
-          const li = element('li');
-          li.append(element('code', null, `${route}`.replace(/^(\w+) /, `$1 /api/ext/${ext.id}/`)));
-          ul.append(li);
+      if (ext.loaded) {
+        box.append(
+          element('p', 'admin-sub', `Version ${ext.version || '?'} · API v${ext.apiVersion} · schema ${ext.schemaVersion}`)
+        );
+        const routes = Array.isArray(ext.routes) ? ext.routes : [];
+        const events = Array.isArray(ext.events) ? ext.events : [];
+        if (routes.length) {
+          box.append(element('p', 'admin-ext-label', 'Routes'));
+          const ul = element('ul', 'admin-ext-items');
+          for (const route of routes) {
+            const li = element('li');
+            li.append(element('code', null, `${route}`.replace(/^(\w+) /, `$1 /api/ext/${ext.id}/`)));
+            ul.append(li);
+          }
+          box.append(ul);
         }
-        box.append(ul);
-      }
-      if (events.length) {
-        box.append(element('p', 'admin-ext-label', 'Events'));
-        const ul = element('ul', 'admin-ext-items');
-        for (const ev of events) {
-          const li = element('li');
-          li.append(element('code', null, ev));
-          ul.append(li);
+        if (events.length) {
+          box.append(element('p', 'admin-ext-label', 'Events'));
+          const ul = element('ul', 'admin-ext-items');
+          for (const ev of events) {
+            const li = element('li');
+            li.append(element('code', null, ev));
+            ul.append(li);
+          }
+          box.append(ul);
         }
-        box.append(ul);
       }
+      if (ext.uiError) box.append(element('p', 'admin-error', `UI ignored: ${ext.uiError}`));
+      if (ext.error) box.append(element('p', 'admin-error', ext.error));
+      els.extList.append(box);
     }
-    if (ext.error) box.append(element('p', 'admin-error', ext.error));
-    els.extList.append(box);
+  }
+
+  if (available.length > 0) {
+    const wrap = element('div', 'admin-ext-available');
+    wrap.append(element('p', 'admin-ext-label', 'Available but not enabled'));
+    for (const item of available) {
+      const box = element('div', 'admin-ext admin-ext-unloaded');
+      const head = element('div', 'admin-ext-head');
+      head.append(element('strong', null, item.name || item.id));
+      head.append(element('code', null, item.id));
+      const kind = item.kind || 'headless';
+      head.append(element('span', `admin-badge admin-badge-kind-${kind}`, kindBadgeLabel(kind)));
+      box.append(head);
+      if (item.description) {
+        box.append(element('p', 'admin-sub', item.description));
+      }
+      if (item.problem) {
+        box.append(element('p', 'admin-error', item.problem));
+      } else if (item.configLine) {
+        const copyBtn = element('button', 'admin-button admin-button-sm', 'Copy config line');
+        copyBtn.type = 'button';
+        copyBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(item.configLine);
+            setMessage(els.extMessage, `Copied config line for ${item.id}. Paste it into config.php.`, 'success');
+          } catch {
+            setMessage(els.extMessage, item.configLine);
+          }
+        });
+        box.append(copyBtn);
+      }
+      wrap.append(box);
+    }
+    els.extList.append(wrap);
   }
 }
 
