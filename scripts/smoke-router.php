@@ -73,7 +73,8 @@ file_put_contents($configPath, '<?php return ' . var_export([
 ], true) . ";\n");
 
 // Seed a listing whose site later served a different key (so a candidate is waiting for review).
-$cfg = WebringHub\Config::load(['db_driver' => 'sqlite', 'sqlite_path' => $dbPath, 'extensions' => []]);
+// auto_migrate is forced on: the operator's config.php may turn it off for the live database
+$cfg = WebringHub\Config::load(['db_driver' => 'sqlite', 'sqlite_path' => $dbPath, 'extensions' => [], 'auto_migrate' => true]);
 $pdo = Database::open($cfg);
 $ext = Extensions::load(['extensions' => []], $pdo);
 $siteUrl = 'https://alice.example';
