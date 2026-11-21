@@ -88,7 +88,9 @@ foreach ($admin as $item) {
     $byId[$item['id']] = $item;
 }
 check(($byId['key-witness']['loaded'] ?? false) === true, 'key-witness loads');
-check(($byId['key-witness']['schemaVersion'] ?? 0) === 1, 'key-witness migrated to schema 1');
+check(($byId['key-witness']['schemaVersion'] ?? 0) === 2, 'key-witness migrated to schema 2 (MySQL collation migration is no-op on SQLite)');
+check(($byId['key-witness']['kind'] ?? '') === 'admin' && ($byId['key-witness']['uiError'] ?? null) === null, 'key-witness is an admin-only extension with valid ui');
+check(count($byId['key-witness']['panels'] ?? []) === 3, 'key-witness declares 3 admin panels');
 check(($byId['does-not-exist']['loaded'] ?? true) === false && !empty($byId['does-not-exist']['error']), 'a missing extension is reported, not fatal');
 check(($byId['Bad_Id']['loaded'] ?? true) === false, 'an invalid id is refused');
 $pubList = $ext->publicList();
@@ -148,6 +150,16 @@ check(($body['current']['fingerprint'] ?? '') === $fp2, 'current key is the acce
 $outcomes = array_column($body['history'], 'outcome');
 check(in_array('operator-accepted', $outcomes, true), 'history shows operator-accepted');
 
+echo "key-witness admin routes\n";
+$sumMatch = $ext->match('GET', '/api/ext/key-witness/v1/admin/summary');
+$obsMatch = $ext->match('GET', '/api/ext/key-witness/v1/admin/observations');
+check($sumMatch !== null && ($sumMatch['route']['admin'] ?? false) === true, 'v1/admin/summary requires admin auth');
+check($obsMatch !== null && ($obsMatch['route']['admin'] ?? false) === true, 'v1/admin/observations requires admin auth');
+[$sumStatus, $sumBody] = Extensions::run($sumMatch, new ExtensionRequest('GET', '', [], static fn (): array => []));
+check($sumStatus === 200 && ($sumBody['sitesTracked'] ?? 0) === 1 && ($sumBody['keysSeen'] ?? 0) === 2 && ($sumBody['operatorAccepted'] ?? 0) === 1 && ($sumBody['rejectedLast30d'] ?? 0) === 1, 'summary counts match observed history');
+[$obsStatus, $obsBody] = Extensions::run($obsMatch, new ExtensionRequest('GET', '', ['limit' => '10'], static fn (): array => []));
+check($obsStatus === 200 && count($obsBody['observations'] ?? []) >= 3 && count($obsBody['changedSites'] ?? []) === 1, 'observations and changedSites list the rotated site');
+
 // Blocked entries are not served.
 Entries::setStatus($pdo, $ext, $did, 'blocked');
 $notFound = false;
@@ -164,6 +176,9 @@ Entries::remove($pdo, $ext, $did, 'self');
 $table = 'ext_key_witness_observations';
 $left = (int) $pdo->query("SELECT COUNT(*) FROM {$table}")->fetchColumn();
 check($left === 0, 'removing the entry deletes its key history');
+[, $sumAfter] = Extensions::run($sumMatch, new ExtensionRequest('GET', '', [], static fn (): array => []));
+[, $obsAfter] = Extensions::run($obsMatch, new ExtensionRequest('GET', '', [], static fn (): array => []));
+check(($sumAfter['sitesTracked'] ?? -1) === 0 && count($obsAfter['observations'] ?? []) === 0 && count($obsAfter['changedSites'] ?? []) === 0, 'removed site disappears from admin summary and observations');
 
 // A listener that throws never reaches the caller.
 $ctxProbe = new ExtensionContext('probe', ['version' => '0'], $pdo, $config);

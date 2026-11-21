@@ -1,13 +1,69 @@
 {
   "id": "key-witness",
   "name": "Key Witness",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "apiVersion": 1,
   "class": "WebringHub\\Ext\\KeyWitness\\KeyWitnessExtension",
   "description": "Keeps a history of the signing keys this hub has seen for each listed site, so Webring Studio can compare a friend's key with an independent observer.",
   "author": "Webring Suite",
   "homepage": "",
-  "routes": ["GET v1/keys/{did}"],
+  "routes": [
+    "GET v1/keys/{did}",
+    "GET v1/admin/summary",
+    "GET v1/admin/observations"
+  ],
   "events": ["entry.verified", "entry.key_rejected", "entry.removed"],
-  "tables": ["observations"]
+  "tables": ["observations"],
+  "ui": {
+    "admin": {
+      "panels": [
+        {
+          "id": "overview",
+          "title": "Key overview",
+          "type": "stats",
+          "source": "v1/admin/summary",
+          "items": [
+            { "key": "sitesTracked", "label": "Sites tracked" },
+            { "key": "keysSeen", "label": "Distinct keys" },
+            { "key": "rotations", "label": "Rotations" },
+            { "key": "operatorAccepted", "label": "Operator accepted" },
+            { "key": "rejectedLast30d", "label": "Rejected (30d)" }
+          ]
+        },
+        {
+          "id": "recent-events",
+          "title": "Recent key events",
+          "type": "table",
+          "source": "v1/admin/observations?limit=50",
+          "itemsKey": "observations",
+          "emptyMessage": "No key observations recorded yet.",
+          "columns": [
+            { "key": "siteUrl", "label": "Site" },
+            { "key": "did", "label": "DID", "as": "code" },
+            { "key": "fingerprintShort", "label": "Fingerprint", "as": "code" },
+            { "key": "outcome", "label": "Outcome", "as": "badge" },
+            { "key": "firstSeenAt", "label": "First seen", "as": "time" },
+            { "key": "lastSeenAt", "label": "Last seen", "as": "time" }
+          ]
+        },
+        {
+          "id": "changed-sites",
+          "title": "Sites whose key changed",
+          "type": "table",
+          "source": "v1/admin/observations?view=changed&limit=50",
+          "itemsKey": "changedSites",
+          "emptyMessage": "No sites have changed keys yet.",
+          "columns": [
+            { "key": "siteUrl", "label": "Site" },
+            { "key": "did", "label": "DID", "as": "code" },
+            { "key": "distinctKeys", "label": "Keys seen" },
+            { "key": "rotations", "label": "Rotations" },
+            { "key": "operatorAccepted", "label": "Operator accepted" },
+            { "key": "rejected", "label": "Rejected" },
+            { "key": "lastSeenAt", "label": "Last seen", "as": "time" }
+          ]
+        }
+      ]
+    }
+  }
 }

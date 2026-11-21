@@ -7,6 +7,7 @@ use PDO;
 use WebringHub\AppError;
 use WebringHub\Extension;
 use WebringHub\ExtensionContext;
+use WebringHub\ExtensionRequest;
 use WebringHub\Verify;
 
 /**
@@ -36,11 +37,23 @@ final class KeyWitnessExtension implements Extension
             $this->backfill($pdo);
         });
 
+        // Audit item 22: byte-exact collation on MySQL `did` so case/accent look-alikes never collide.
+        // SQLite is already byte-exact, so this migration is a no-op there.
+        $ctx->migrate(2, function (PDO $pdo, string $driver): void {
+            if ($driver === 'mysql') {
+                $pdo->exec(
+                    "ALTER TABLE {$this->table} MODIFY COLUMN did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL"
+                );
+            }
+        });
+
         $ctx->on('entry.verified', fn (array $e) => $this->onVerified($e));
         $ctx->on('entry.key_rejected', fn (array $e) => $this->onRejected($e));
         $ctx->on('entry.removed', fn (array $e) => $this->forget((string) ($e['did'] ?? '')));
 
         $ctx->get('v1/keys/{did}', fn (array $params) => $this->keysFor($params['did']));
+        $ctx->get('v1/admin/summary', fn () => $this->adminSummary(), ['admin' => true]);
+        $ctx->get('v1/admin/observations', fn (array $params, ExtensionRequest $req) => $this->adminObservations($req), ['admin' => true]);
     }
 
     /**
@@ -149,6 +162,107 @@ final class KeyWitnessExtension implements Extension
             ],
             'history' => $history,
             'observedAt' => (string) $row['last_checked_at'],
+        ];
+    }
+
+    /**
+     * GET /api/ext/key-witness/v1/admin/summary (admin only)
+     *
+     * @return array<string, int>
+     */
+    private function adminSummary(): array
+    {
+        $pdo = $this->ctx->pdo();
+        $cutoff = gmdate('Y-m-d\TH:i:s.000\Z', time() - 30 * 86400);
+
+        $sitesTracked = (int) $pdo->query("SELECT COUNT(DISTINCT did) FROM {$this->table}")->fetchColumn();
+        $keysSeen = (int) $pdo->query("SELECT COUNT(DISTINCT fingerprint) FROM {$this->table}")->fetchColumn();
+        $rotations = (int) $pdo->query("SELECT COUNT(*) FROM {$this->table} WHERE outcome = 'rotated'")->fetchColumn();
+        $operatorAccepted = (int) $pdo->query("SELECT COUNT(*) FROM {$this->table} WHERE outcome = 'operator-accepted'")->fetchColumn();
+
+        $rejStmt = $pdo->prepare(
+            "SELECT COUNT(*) FROM {$this->table} WHERE outcome = 'rejected' AND last_seen_at >= ?"
+        );
+        $rejStmt->execute([$cutoff]);
+        $rejectedLast30d = (int) $rejStmt->fetchColumn();
+
+        return [
+            'sitesTracked' => $sitesTracked,
+            'keysSeen' => $keysSeen,
+            'rotations' => $rotations,
+            'operatorAccepted' => $operatorAccepted,
+            'rejectedLast30d' => $rejectedLast30d,
+        ];
+    }
+
+    /**
+     * GET /api/ext/key-witness/v1/admin/observations?limit= (admin only)
+     *
+     * @return array{observations: list<array<string, mixed>>, changedSites: list<array<string, mixed>>}
+     */
+    private function adminObservations(ExtensionRequest $req): array
+    {
+        $pdo = $this->ctx->pdo();
+        $rawLimit = $req->query['limit'] ?? 50;
+        $limit = is_numeric($rawLimit) ? min(max((int) $rawLimit, 1), 200) : 50;
+
+        $stmt = $pdo->prepare(
+            "SELECT did, site_url, fingerprint, outcome, first_seen_at, last_seen_at
+             FROM {$this->table}
+             ORDER BY last_seen_at DESC, id DESC
+             LIMIT ?"
+        );
+        $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        $observations = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $fp = (string) $row['fingerprint'];
+            $short = strlen($fp) > 16 ? substr($fp, 0, 10) . '…' . substr($fp, -6) : $fp;
+            $observations[] = [
+                'siteUrl' => (string) $row['site_url'],
+                'did' => (string) $row['did'],
+                'fingerprint' => $fp,
+                'fingerprintShort' => $short,
+                'outcome' => (string) $row['outcome'],
+                'firstSeenAt' => (string) $row['first_seen_at'],
+                'lastSeenAt' => (string) $row['last_seen_at'],
+            ];
+        }
+
+        $changedStmt = $pdo->prepare(
+            "SELECT did,
+                    MAX(site_url) AS site_url,
+                    COUNT(DISTINCT fingerprint) AS distinct_keys,
+                    SUM(CASE WHEN outcome = 'rotated' THEN 1 ELSE 0 END) AS rotations,
+                    SUM(CASE WHEN outcome = 'operator-accepted' THEN 1 ELSE 0 END) AS operator_accepted,
+                    SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+                    MAX(last_seen_at) AS last_seen_at
+             FROM {$this->table}
+             GROUP BY did
+             HAVING COUNT(DISTINCT fingerprint) > 1
+             ORDER BY last_seen_at DESC
+             LIMIT ?"
+        );
+        $changedStmt->bindValue(1, $limit, PDO::PARAM_INT);
+        $changedStmt->execute();
+
+        $changedSites = [];
+        foreach ($changedStmt->fetchAll() as $row) {
+            $changedSites[] = [
+                'siteUrl' => (string) $row['site_url'],
+                'did' => (string) $row['did'],
+                'distinctKeys' => (int) $row['distinct_keys'],
+                'rotations' => (int) $row['rotations'],
+                'operatorAccepted' => (int) $row['operator_accepted'],
+                'rejected' => (int) $row['rejected'],
+                'lastSeenAt' => (string) $row['last_seen_at'],
+            ];
+        }
+
+        return [
+            'observations' => $observations,
+            'changedSites' => $changedSites,
         ];
     }
 
