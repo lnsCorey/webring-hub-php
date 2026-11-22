@@ -105,12 +105,12 @@ try {
 Entries::saveVerified($pdo, $ext, array_merge($samples[0], ['publicKeyPem' => $aliceKey2['publicKeyPem']]), true);
 
 // Seed sample Arcade scores
-$runExt = static function (string $method, string $path, array $body = []) use ($ext): array {
+$runExt = static function (string $method, string $path, array $body = [], ?string $userDid = null, bool $optedIn = false) use ($ext): array {
     $match = $ext->match($method, $path);
     if ($match === null) {
         return [404, []];
     }
-    return Extensions::run($match, new ExtensionRequest($method, $path, [], static fn (): array => $body, 'preview-client'));
+    return Extensions::run($match, new ExtensionRequest($method, $path, [], static fn (): array => $body, 'preview-client', $userDid, $optedIn));
 };
 
 foreach (
@@ -120,14 +120,13 @@ foreach (
         ['starfall-siege', 'did:web:alice.example', 18200, 62000],
     ] as [$slug, $did, $score, $dur]
 ) {
-    [, $sess] = $runExt('POST', "/api/ext/arcade/v1/games/{$slug}/sessions", ['did' => $did]);
+    [, $sess] = $runExt('POST', "/api/ext/arcade/v1/games/{$slug}/sessions", [], $did, true);
     if (!empty($sess['sessionId'])) {
         $runExt('POST', "/api/ext/arcade/v1/games/{$slug}/scores", [
             'sessionId' => $sess['sessionId'],
-            'did' => $did,
             'score' => $score,
             'durationMs' => $dur,
-        ]);
+        ], $did, true);
     }
 }
 

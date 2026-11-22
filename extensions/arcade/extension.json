@@ -19,9 +19,13 @@
     "DELETE v1/admin/players/{did}",
     "DELETE v1/admin/games/{slug}/scores"
   ],
-  "events": ["entry.removed", "cron.refresh"],
+  "events": ["entry.removed", "cron.refresh", "user.extension_opt_out"],
   "tables": ["games", "scores", "plays", "sessions", "limits"],
   "public": ["/ext/arcade/", "/ext/arcade/games/"],
+  "userData": {
+    "optInRequired": true,
+    "summary": "Stores your public high scores and play history under your verified DID."
+  },
   "ui": {
     "public": {
       "title": "Arcade",

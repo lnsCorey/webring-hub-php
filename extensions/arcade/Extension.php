@@ -85,6 +85,11 @@ final class ArcadeExtension implements Extension
         }
 
         $ctx->on('entry.removed', fn (array $e) => $this->purgePlayer((string) ($e['did'] ?? '')));
+        $ctx->on('user.extension_opt_out', function (array $e): void {
+            if (($e['extensionId'] ?? '') === 'arcade') {
+                $this->purgePlayer((string) ($e['did'] ?? ''));
+            }
+        });
         $ctx->on('cron.refresh', function (): void {
             // The games folder is rescanned here and from the admin routes, never on public
             // requests, so anonymous visitors can't make the hub write to its database.
@@ -95,8 +100,8 @@ final class ArcadeExtension implements Extension
         $ctx->get('v1/games', fn (array $p, ExtensionRequest $req) => $this->listGames($req));
         $ctx->get('v1/games/{slug}', fn (array $p) => $this->getGame($p['slug']));
         $ctx->get('v1/games/{slug}/scores', fn (array $p, ExtensionRequest $req) => $this->getLeaderboard($p['slug'], $req));
-        $ctx->post('v1/games/{slug}/sessions', fn (array $p, ExtensionRequest $req) => $this->createSession($p['slug'], $req));
-        $ctx->post('v1/games/{slug}/scores', fn (array $p, ExtensionRequest $req) => $this->submitScore($p['slug'], $req));
+        $ctx->post('v1/games/{slug}/sessions', fn (array $p, ExtensionRequest $req) => $this->createSession($p['slug'], $req), ['userAuth' => true, 'requireOptIn' => true]);
+        $ctx->post('v1/games/{slug}/scores', fn (array $p, ExtensionRequest $req) => $this->submitScore($p['slug'], $req), ['userAuth' => true, 'requireOptIn' => true]);
         $ctx->get('v1/players/{did}/history', fn (array $p, ExtensionRequest $req) => $this->getPlayerHistory($p['did'], $req));
 
         $ctx->get('v1/admin/games', fn () => $this->adminListGames(), ['admin' => true]);
@@ -558,8 +563,13 @@ final class ArcadeExtension implements Extension
     {
         $this->ensureCatalog();
         $this->requireActiveGameRow($slug);
-        $body = $req->json();
-        $did = trim((string) ($body['did'] ?? ''));
+        $did = trim((string) ($req->userDid ?? ''));
+        if ($did === '') {
+            throw new AppError(401, 'auth_required', 'Sign in with your Webring Studio DID to record scores.');
+        }
+        if (!$req->userOptedIn) {
+            throw new AppError(403, 'opt_in_required', 'Opt in to Arcade score recording before starting a scored session.');
+        }
         $this->requireActivePlayer($did);
 
         // Scores are self-reported, so limits are per client: per (client, DID) so nobody can use up
@@ -610,12 +620,18 @@ final class ArcadeExtension implements Extension
 
         $body = $req->json();
         $sessionId = trim((string) ($body['sessionId'] ?? ''));
-        $did = trim((string) ($body['did'] ?? ''));
+        $did = trim((string) ($req->userDid ?? ''));
         $scoreVal = $body['score'] ?? null;
         $durationVal = $body['durationMs'] ?? 0;
 
-        if ($sessionId === '' || $did === '') {
-            throw new AppError(400, 'invalid_request', 'sessionId and did are required.');
+        if ($did === '') {
+            throw new AppError(401, 'auth_required', 'Sign in with your Webring Studio DID to submit scores.');
+        }
+        if (!$req->userOptedIn) {
+            throw new AppError(403, 'opt_in_required', 'Opt in to Arcade score recording before submitting scores.');
+        }
+        if ($sessionId === '') {
+            throw new AppError(400, 'invalid_request', 'sessionId is required.');
         }
         $this->requireActivePlayer($did);
 

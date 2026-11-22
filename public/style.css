@@ -1904,3 +1904,112 @@ pre code {
   gap: 8px;
   max-width: 440px;
 }
+
+
+/* ============================================================================
+   Hub Public DID Sign-In & My Data Dialog
+   ============================================================================ */
+.hub-auth-bar,
+.hub-user-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-btn {
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.hub-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.hub-btn-danger {
+  border-color: var(--err-border);
+  background: rgba(225, 29, 72, 0.16);
+  color: #fecdd3;
+}
+
+.hub-btn-danger:hover:not(:disabled) {
+  background: var(--err-primary);
+  color: #ffffff;
+}
+
+.hub-auth-dialog {
+  max-width: 520px;
+  width: calc(100% - 32px);
+}
+
+.hub-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.hub-cli-fallback {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.hub-cli-cmd {
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text-bright);
+  font-size: 0.74rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mydata-list {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.mydata-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.mydata-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.mydata-info {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.mydata-info .hint {
+  margin: 0;
+}

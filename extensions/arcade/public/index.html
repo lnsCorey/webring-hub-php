@@ -19,23 +19,34 @@
     </header>
 
     <p class="trust-banner" role="note">
-      <strong>Leaderboards are for fun.</strong> Scores are reported by players' browsers and are
-      not checked, and anyone can play under any listed DID. A score is not proof of who played.
+      <strong>Verified DIDs, scores for fun.</strong> Player identities are verified by Ed25519
+      sign-in with Webring Studio and require opt-in. Gameplay scores are reported by players'
+      browsers and are for fun.
     </p>
 
     <section class="panel" aria-label="Player Identity">
       <div class="player-bar">
-        <label for="did-input"><strong>Player DID:</strong></label>
-        <input id="did-input" class="input" type="text" placeholder="did:web:alice.example" autocomplete="off" />
-        <button id="did-save-btn" class="btn btn-primary" type="button">Set Player</button>
-        <button id="did-history-btn" class="btn hidden" type="button">My Play History</button>
-        <button id="did-clear-btn" class="btn hidden" type="button">Clear</button>
         <span id="did-status" class="status-pill status-warn">Playing as Guest (scores not saved)</span>
+        <button id="auth-signin-btn" class="btn btn-primary" type="button">Sign in with Studio</button>
+        <button id="optin-btn" class="btn btn-primary hidden" type="button">Opt in to Record Scores</button>
+        <button id="did-history-btn" class="btn hidden" type="button">My Play History</button>
+        <button id="optout-btn" class="btn btn-danger hidden" type="button">Opt out &amp; Delete Scores</button>
+        <button id="auth-signout-btn" class="btn hidden" type="button">Sign out</button>
       </div>
-      <p class="notice">
-        Note: Games can be played without a DID. Leaderboards record scores for active hub DIDs (claimed DID mode for MVP).
+      <p class="notice" id="did-help">
+        Guests can play any game immediately. Sign in with Webring Studio and opt in to record public high scores under your verified DID.
       </p>
     </section>
+
+    <dialog id="arcade-auth-dialog" class="panel" aria-labelledby="arcade-auth-title">
+      <h2 id="arcade-auth-title" class="detail-title">Sign in with Webring Studio</h2>
+      <p class="notice">Approve this sign-in request with your Ed25519 key in Webring Studio.</p>
+      <p id="arcade-auth-status" class="notice" role="status" aria-live="polite"></p>
+      <div class="player-bar play-bar">
+        <a id="arcade-auth-link" class="btn btn-primary hidden" href="#">Open Webring Studio</a>
+        <button id="arcade-auth-cancel" class="btn" type="button">Cancel</button>
+      </div>
+    </dialog>
 
     <section class="panel" id="catalog-controls">
       <div class="player-bar">

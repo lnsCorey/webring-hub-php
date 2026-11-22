@@ -28,9 +28,16 @@
                   <span class="brand-subtitle">Ed25519 Signed DID • Federated Profile Index</span>
                 </span>
               </a>
-              <div class="header-badges" aria-hidden="true">
-                <span class="status-pill status-pill-emerald">Signed DID Verified</span>
-                <span class="status-pill status-pill-indigo">did:web • Static JSON</span>
+              <div class="header-badges">
+                <span class="status-pill status-pill-emerald" aria-hidden="true">Signed DID Verified</span>
+                <div class="hub-auth-bar">
+                  <button id="hub-signin-btn" class="hub-btn" type="button">Sign in with Studio</button>
+                  <div id="hub-user-bar" class="hub-user-bar" hidden>
+                    <span id="hub-user-name" class="status-pill status-pill-indigo"></span>
+                    <button id="hub-mydata-btn" class="hub-btn" type="button">My Data</button>
+                    <button id="hub-signout-btn" class="hub-btn" type="button">Sign out</button>
+                  </div>
+                </div>
               </div>
             </div>
             <p class="tagline"><!--INSTANCE_DESCRIPTION-->A searchable, opt-in index of Webring Studio profiles. Every entry is verified against the Ed25519 key published by the site itself.<!--/INSTANCE_DESCRIPTION--></p>
@@ -121,7 +128,36 @@
       </p>
     </footer>
 
+    <dialog id="auth-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="auth-dialog-title">
+      <h2 id="auth-dialog-title">Sign in with Webring Studio</h2>
+      <p class="hint">
+        Verify your listed <code>did:web</code> identity using your Ed25519 key in Webring Studio.
+        No passwords or third-party accounts are used.
+      </p>
+      <p id="auth-status" class="form-message" role="status" aria-live="polite"></p>
+      <div class="hub-dialog-actions">
+        <a id="auth-launch-link" class="button" href="#" hidden>Open Webring Studio</a>
+        <button id="auth-cancel-btn" class="hub-btn" type="button">Cancel</button>
+      </div>
+      <details class="hub-cli-fallback">
+        <summary>CLI / another device fallback</summary>
+        <p class="hint">Sign this challenge from the terminal using your Ed25519 private key:</p>
+        <pre id="auth-cli-cmd" class="hub-cli-cmd"></pre>
+      </details>
+    </dialog>
+
+    <dialog id="mydata-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="mydata-dialog-title">
+      <h2 id="mydata-dialog-title">My Data &amp; Extension Privacy</h2>
+      <p class="hint">Signed in as <code id="mydata-did"></code>. Opting out of an extension deletes all data it stores for your DID.</p>
+      <div id="mydata-list" class="mydata-list"></div>
+      <p id="mydata-status" class="form-message" role="status" aria-live="polite"></p>
+      <div class="hub-dialog-actions">
+        <button id="mydata-close-btn" class="hub-btn" type="button">Close</button>
+      </div>
+    </dialog>
+
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/hub-auth.js"></script>
     <!--EXTENSION_CARDS_SCRIPT--><!--/EXTENSION_CARDS_SCRIPT-->
   </body>
 </html>

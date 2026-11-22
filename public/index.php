@@ -26,6 +26,7 @@ const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' https: data:
 
 const STATIC_ASSETS = [
     '/app.js' => ['app.js', 'text/javascript; charset=utf-8'],
+    '/hub-auth.js' => ['hub-auth.js', 'text/javascript; charset=utf-8'],
     '/ext-carousel.js' => ['ext-carousel.js', 'text/javascript; charset=utf-8'],
     '/remove.js' => ['remove.js', 'text/javascript; charset=utf-8'],
     '/admin.js' => ['admin.js', 'text/javascript; charset=utf-8'],
