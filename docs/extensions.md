@@ -57,6 +57,23 @@ Every extension must follow these rules. They carry Webring Studio's static-site
 6. **No trackers.** Don't add third-party scripts, pixels or fonts to hub pages. Keep logs of IP addresses or requests to the minimum (the core's rate limiting is enough for most needs).
 7. **Clients never run your code.** Webring Studio has built-in clients for specific `id` and `apiVersion` pairs and ignores any extension it doesn't know. Keep responses plain JSON, and treat the routes and fields under a version prefix as a contract.
 8. **Don't break the core.** Event handlers run after the core has committed its change. An exception in a handler is logged and ignored, so handlers can't undo or block a core change. Make them idempotent and cheap: they run inside the request that caused the change.
+9. **Safe UI surfaces.** Public extension pages follow the no-trackers rule and send a strict CSP (no third-party scripts, fonts or pixels). Admin panels are declared as JSON in `extension.json`, point only at your own `admin: true` routes, and are rendered by the hub's admin page as plain text (`textContent`) so extension code never runs in `/admin`.
+
+## User and admin surfaces
+
+An extension can declare an optional `ui` object in `extension.json` (`apiVersion` stays `1`). That determines the extension's **kind**:
+
+| `ui` declares | Kind | Where it appears |
+| --- | --- | --- |
+| `public` only | `public` (**user-facing**) | Home-page carousel and `/api/info` card fields |
+| `admin` only | `admin` (**admin**) | Declarative panels on `/admin` |
+| both | `both` | Home-page carousel and `/admin` panels |
+| neither | `headless` (**API only**) | Listed in `/admin` and `/api/info` without UI surfaces |
+
+- **`ui.public`:** `{ title, tagline, href, cta, art, accent }`. `href` must stay under `/ext/<id>/`, `art` is a relative image file (`svg`, `png`, `jpg`, `webp`) served under `/ext/<id>/`, and `accent` is one of `magenta`, `cyan`, `yellow`, `green`, `violet`, `orange` (mapped to CSS classes so the home page's `style-src 'self'` CSP stays strict).
+- **`ui.admin.panels`:** up to 8 declarative panels (`stats`, `table`, or `form`), each with at most 12 columns/fields and 6 actions. Every `source` and action `path` must match an `admin: true` route registered by the same extension. Column renderers are `text`, `code`, `time`, and `badge`; nothing renders HTML.
+- If any `ui` validation rule fails, the `ui` block is ignored (`kind` falls back to `headless`), the extension still loads, and `/admin` displays `uiError`.
+- `/api/admin/extensions` also returns `available`: installed folders in `extensions/` that are not enabled, read from `extension.json` only without executing any PHP.
 
 ## Layout
 

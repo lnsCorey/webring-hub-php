@@ -15,6 +15,7 @@ require_once $appRoot . '/src/Site.php';
 require_once $appRoot . '/src/Database.php';
 require_once $appRoot . '/src/Template.php';
 require_once $appRoot . '/src/Extensions.php';
+require_once $appRoot . '/src/Auth.php';
 require_once $appRoot . '/src/Entries.php';
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -25,8 +26,11 @@ const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' https: data:
 
 const STATIC_ASSETS = [
     '/app.js' => ['app.js', 'text/javascript; charset=utf-8'],
+    '/hub-auth.js' => ['hub-auth.js', 'text/javascript; charset=utf-8'],
+    '/ext-carousel.js' => ['ext-carousel.js', 'text/javascript; charset=utf-8'],
     '/remove.js' => ['remove.js', 'text/javascript; charset=utf-8'],
     '/admin.js' => ['admin.js', 'text/javascript; charset=utf-8'],
+    '/admin-panels.js' => ['admin-panels.js', 'text/javascript; charset=utf-8'],
     '/style.css' => ['style.css', 'text/css; charset=utf-8'],
     '/favicon.svg' => ['favicon.svg', 'image/svg+xml'],
     '/favicon.png' => ['favicon.png', 'image/png'],
@@ -409,12 +413,32 @@ try {
         if ($match['route']['rateLimited']) {
             $enforceWriteLimit();
         }
+        $cookieToken = is_string($_COOKIE[Auth::SESSION_COOKIE] ?? null) ? $_COOKIE[Auth::SESSION_COOKIE] : '';
+        $userSession = $cookieToken !== '' ? Auth::getSession($pdo, $cookieToken) : null;
+        $userDid = $userSession !== null ? $userSession['did'] : null;
+        $extId = (string) ($match['extensionId'] ?? '');
+        $userOptedIn = ($userDid !== null && $extId !== '') ? Auth::isOptedIn($pdo, $userDid, $extId) : false;
+
+        if (!empty($match['route']['userAuth']) || !empty($match['route']['requireOptIn'])) {
+            if ($userSession === null) {
+                throw new AppError(401, 'auth_required', 'Sign in with your Webring Studio DID to use this feature.');
+            }
+            if ($method === 'POST' || $method === 'DELETE') {
+                Auth::requireCsrf($userSession, $_SERVER);
+            }
+            if (!empty($match['route']['requireOptIn']) && !$userOptedIn) {
+                throw new AppError(403, 'opt_in_required', 'Opt in to this extension before recording data under your DID.');
+            }
+        }
+
         $request = new ExtensionRequest(
             $method,
             $pathname,
             $_GET,
             static fn (): array => readJsonBody(),
-            Database::clientKeyHash($pdo, clientIp($trustProxy, $trustedProxyHops))
+            Database::clientKeyHash($pdo, clientIp($trustProxy, $trustedProxyHops)),
+            $userDid,
+            $userOptedIn
         );
         [$status, $body] = Extensions::run($match, $request);
         sendJson($status, $body, [], $method === 'HEAD');
@@ -437,7 +461,7 @@ try {
 
         if ($pathname === '/' || $pathname === '/index.html') {
             $meta = Database::getInstanceMeta($pdo, $defaultMeta);
-            $html = Template::renderTemplateFile('index.html', $meta, $pdo);
+            $html = Template::renderTemplateFile('index.html', $meta, $pdo, $extensions->publicCards());
             sendHtml(200, $html, $headOnly);
         }
 
@@ -460,6 +484,53 @@ try {
 
         if ($pathname === '/api/healthz') {
             sendJson(200, ['ok' => true], [], $headOnly);
+        }
+
+        // One-click direct-launch handoff from Webring Studio: exchanges a pre-approved launch code
+        // for an HttpOnly session cookie and redirects to a safe local path (e.g. `/` or `/ext/arcade/`).
+        if ($pathname === '/auth/claim') {
+            $code = is_string($_GET['code'] ?? null) ? trim($_GET['code']) : '';
+            $secret = is_string($_GET['secret'] ?? null) ? trim($_GET['secret']) : '';
+            $next = is_string($_GET['next'] ?? null) ? trim($_GET['next']) : '/';
+            if (!str_starts_with($next, '/') || str_starts_with($next, '//') || str_contains($next, "\r") || str_contains($next, "\n")) {
+                $next = '/';
+            }
+            $claimed = Auth::claimChallenge($pdo, $code, $secret, $extensions);
+            if (($claimed['status'] ?? '') !== 'authenticated' || empty($claimed['token'])) {
+                throw new AppError(400, 'invalid_challenge', 'This sign-in link is not ready or has expired.');
+            }
+            Auth::setSessionCookie((string) $claimed['token'], isHttpsRequest());
+            http_response_code(302);
+            setCommonHeaders();
+            header('Cache-Control: no-store');
+            header('Location: ' . $next);
+            exit;
+        }
+
+        if ($pathname === '/api/auth/me') {
+            $cookieToken = is_string($_COOKIE[Auth::SESSION_COOKIE] ?? null) ? $_COOKIE[Auth::SESSION_COOKIE] : '';
+            $session = $cookieToken !== '' ? Auth::getSession($pdo, $cookieToken) : null;
+            if ($session === null) {
+                sendJson(200, [
+                    'authenticated' => false,
+                    'user' => null,
+                    'csrfToken' => null,
+                    'consents' => [],
+                ], [], $headOnly);
+            }
+            $entry = $session['entry'];
+            sendJson(200, [
+                'authenticated' => true,
+                'user' => [
+                    'did' => (string) $entry['did'],
+                    'displayName' => (string) ($entry['display_name'] ?: $entry['did']),
+                    'handle' => (string) ($entry['handle'] ?? ''),
+                    'siteUrl' => (string) ($entry['site_url'] ?? ''),
+                ],
+                'csrfToken' => $session['csrfToken'],
+                'expiresAt' => $session['expiresAt'],
+                'consents' => Auth::listConsents($pdo, $session['did'], $extensions),
+            ], [], $headOnly);
         }
 
         if ($pathname === '/api/info') {
@@ -505,7 +576,10 @@ try {
 
         if ($pathname === '/api/admin/extensions') {
             requireAdmin($adminToken, $pdo, $trustProxy, $trustedProxyHops, $adminLimits);
-            sendJson(200, ['extensions' => $extensions->adminList()], [], $headOnly);
+            sendJson(200, [
+                'extensions' => $extensions->adminList(),
+                'available' => $extensions->availableList(),
+            ], [], $headOnly);
         }
 
         // Every entry whatever its status, with the operator-only fields from toAdminEntry.
@@ -556,6 +630,80 @@ try {
         $mediaType = strtolower(trim(explode(';', $rawContentType, 2)[0]));
         if ($mediaType !== 'application/json') {
             throw new AppError(415, 'unsupported_media_type', 'Content-Type must be application/json.');
+        }
+
+        if ($pathname === '/api/auth/challenge') {
+            $enforceWriteLimit();
+            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
+            $body = readJsonBody();
+            $requestedExt = is_string($body['extensionId'] ?? null) ? trim($body['extensionId']) : '';
+            $ch = Auth::createChallenge($pdo, (string) ($meta['directoryUrl'] ?? ''), $requestedExt);
+            sendJson(201, $ch);
+        }
+
+        if ($pathname === '/api/auth/verify') {
+            $enforceWriteLimit();
+            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
+            $body = readJsonBody();
+            $res = Auth::verifySignedAuth($pdo, $body, (string) ($meta['directoryUrl'] ?? ''), $extensions);
+            sendJson(200, $res);
+        }
+
+        if ($pathname === '/api/auth/claim') {
+            $body = readJsonBody();
+            $cid = is_string($body['challengeId'] ?? null) ? trim($body['challengeId']) : '';
+            $secret = is_string($body['challengeSecret'] ?? null) ? trim($body['challengeSecret']) : '';
+            $claimed = Auth::claimChallenge($pdo, $cid, $secret, $extensions);
+            if (($claimed['status'] ?? '') === 'authenticated' && !empty($claimed['token'])) {
+                Auth::setSessionCookie((string) $claimed['token'], isHttpsRequest());
+                sendJson(200, [
+                    'status' => 'authenticated',
+                    'did' => $claimed['did'],
+                    'csrfToken' => $claimed['csrfToken'],
+                    'expiresAt' => $claimed['expiresAt'],
+                ]);
+            }
+            sendJson(200, ['status' => 'pending']);
+        }
+
+        if ($pathname === '/api/auth/logout') {
+            $cookieToken = is_string($_COOKIE[Auth::SESSION_COOKIE] ?? null) ? $_COOKIE[Auth::SESSION_COOKIE] : '';
+            if ($cookieToken !== '') {
+                $session = Auth::getSession($pdo, $cookieToken);
+                if ($session !== null) {
+                    Auth::requireCsrf($session, $_SERVER);
+                }
+                Auth::revokeSession($pdo, $cookieToken);
+            }
+            Auth::clearSessionCookie(isHttpsRequest());
+            sendJson(200, ['ok' => true]);
+        }
+
+        if (preg_match('#^/api/auth/extensions/([a-z][a-z0-9-]{1,40})/consent$#', $pathname, $matches)) {
+            $extId = $matches[1];
+            if (!$extensions->isLoaded($extId)) {
+                throw new AppError(404, 'not_found', 'Extension not found.');
+            }
+            $cookieToken = is_string($_COOKIE[Auth::SESSION_COOKIE] ?? null) ? $_COOKIE[Auth::SESSION_COOKIE] : '';
+            $session = $cookieToken !== '' ? Auth::getSession($pdo, $cookieToken) : null;
+            if ($session === null) {
+                throw new AppError(401, 'auth_required', 'Sign in with your DID first.');
+            }
+            Auth::requireCsrf($session, $_SERVER);
+            $body = readJsonBody();
+            if (!isset($body['optedIn']) || !is_bool($body['optedIn'])) {
+                throw new AppError(400, 'invalid_request', 'optedIn must be a boolean.');
+            }
+            $result = Auth::setConsent($pdo, $session['did'], $extId, $body['optedIn'], $extensions);
+            sendJson(200, $result);
+        }
+
+        if (preg_match('#^/api/auth/extensions/([a-z][a-z0-9-]{1,40})/opt-out$#', $pathname, $matches)) {
+            $enforceWriteLimit();
+            $meta = Database::getInstanceMeta($pdo, $defaultMeta);
+            $body = readJsonBody();
+            $result = Auth::verifySignedOptOut($pdo, $body, (string) ($meta['directoryUrl'] ?? ''), $matches[1], $extensions);
+            sendJson(200, $result);
         }
 
         if ($pathname === '/api/entries') {

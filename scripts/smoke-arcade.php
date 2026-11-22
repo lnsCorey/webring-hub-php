@@ -48,13 +48,13 @@ function expectError(callable $fn, string $code, string $label): void
     }
 }
 
-function callExt(Extensions $ext, string $method, string $path, array $query = [], array $body = [], string $clientKey = 'client-a'): array
+function callExt(Extensions $ext, string $method, string $path, array $query = [], array $body = [], string $clientKey = 'client-a', ?string $userDid = null, bool $userOptedIn = false): array
 {
     $match = $ext->match($method, $path);
     if ($match === null) {
         throw new RuntimeException("No route matched {$method} {$path}");
     }
-    $req = new ExtensionRequest($method, $path, $query, static fn (): array => $body, $clientKey);
+    $req = new ExtensionRequest($method, $path, $query, static fn (): array => $body, $clientKey, $userDid, $userOptedIn);
     return Extensions::run($match, $req);
 }
 
@@ -69,6 +69,12 @@ echo "loader & static files\n";
 check($ext->isLoaded('arcade'), 'arcade extension loads');
 $adminInfo = $ext->adminList()[0] ?? [];
 check(($adminInfo['schemaVersion'] ?? 0) === 2, 'arcade migrated to schema 2');
+check(($adminInfo['kind'] ?? '') === 'both' && ($adminInfo['uiError'] ?? null) === null, 'arcade manifest validates as kind=both');
+check(count($adminInfo['panels'] ?? []) === 2, 'arcade declares 2 admin panels (Games + Remove a player)');
+$pubInfo = $ext->publicList()[0] ?? [];
+check(($pubInfo['ui']['public']['art'] ?? '') === '/ext/arcade/card.svg' && ($pubInfo['ui']['public']['accent'] ?? '') === 'magenta', 'arcade exposes carousel card in publicList');
+$cardSvg = $ext->resolvePublicFile('/ext/arcade/card.svg');
+check($cardSvg !== null && str_contains($cardSvg['headers']['Content-Security-Policy'] ?? '', "default-src 'none'"), 'card.svg resolves with restrictive SVG CSP');
 check(in_array('/ext/arcade/', $adminInfo['public'] ?? [], true), 'adminList reports /ext/arcade/ public mount');
 
 $landing = $ext->resolvePublicFile('/ext/arcade/');
@@ -120,41 +126,48 @@ Entries::saveVerified($pdo, $ext, [
 ]);
 
 expectError(
-    static fn () => callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], ['did' => 'did:web:unknown.example']),
+    static fn () => callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], []),
+    'auth_required',
+    'rejects session when unauthenticated'
+);
+expectError(
+    static fn () => callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], [], 'client-a', $aliceDid, false),
+    'opt_in_required',
+    'rejects session when authenticated but not opted in'
+);
+expectError(
+    static fn () => callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], [], 'client-a', 'did:web:unknown.example', true),
     'player_not_found',
     'rejects session for unlisted DID'
 );
 
-[$status, $sess1] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], ['did' => $aliceDid]);
-check($status === 201 && !empty($sess1['sessionId']), 'creates play session for active DID');
+[$status, $sess1] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], [], 'client-a', $aliceDid, true);
+check($status === 201 && !empty($sess1['sessionId']), 'creates play session for verified & opted-in active DID');
 
 [$status, $score1] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/scores', [], [
     'sessionId' => $sess1['sessionId'],
-    'did' => $aliceDid,
     'score' => 4200,
     'durationMs' => 35000,
     'meta' => ['wave' => 3],
-]);
+], 'client-a', $aliceDid, true);
 check($status === 200 && ($score1['accepted'] ?? false) === true && ($score1['isPersonalBest'] ?? false) === true && ($score1['rank'] ?? 0) === 1, 'accepts valid score and records personal best');
 
 expectError(
     static fn () => callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/scores', [], [
         'sessionId' => $sess1['sessionId'],
-        'did' => $aliceDid,
         'score' => 5000,
         'durationMs' => 40000,
-    ]),
+    ], 'client-a', $aliceDid, true),
     'session_used',
     'rejects replayed session token'
 );
 
-[$status, $sess2] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], ['did' => $aliceDid]);
+[$status, $sess2] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], [], 'client-a', $aliceDid, true);
 [$status, $score2] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/scores', [], [
     'sessionId' => $sess2['sessionId'],
-    'did' => $aliceDid,
     'score' => 1800,
     'durationMs' => 20000,
-]);
+], 'client-a', $aliceDid, true);
 check($status === 200 && ($score2['isPersonalBest'] ?? true) === false && ($score2['best'] ?? 0) === 4200, 'lower run keeps higher personal best');
 
 [$status, $lb] = callExt($ext, 'GET', '/api/ext/arcade/v1/games/vector-rift/scores');
@@ -200,7 +213,7 @@ foreach ([$bobDid, $carolDid] as $playerDid) {
         'keyRotations' => [],
     ]);
 }
-$startAs = static fn (string $did, string $client) => callExt($quotaExt, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], ['did' => $did], $client);
+$startAs = static fn (string $did, string $client) => callExt($quotaExt, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], [], $client, $did, true);
 $startAs($bobDid, 'attacker');
 $startAs($bobDid, 'attacker');
 expectError(static fn () => $startAs($bobDid, 'attacker'), 'rate_limited', 'one client is limited per player');
@@ -225,6 +238,26 @@ callExt($ext, 'POST', '/api/ext/arcade/v1/admin/games/starfall-siege/enabled', [
 Entries::remove($pdo, $ext, $aliceDid, 'self');
 [$status, $lbAfterRemove] = callExt($ext, 'GET', '/api/ext/arcade/v1/games/vector-rift/scores');
 check(count($lbAfterRemove['scores'] ?? []) === 0, 'entry.removed deletes player scores and history');
+
+// Verify user.extension_opt_out also deletes all arcade data for a player
+$carolOptDid = 'did:web:optout.example';
+Entries::saveVerified($pdo, $ext, [
+    'siteUrl' => 'https://optout.example',
+    'did' => $carolOptDid,
+    'manifest' => [],
+    'profile' => ['displayName' => 'OptOut', 'updatedAt' => '2026-11-21T00:00:00Z'],
+    'publicKeyPem' => Verify::generateKeyPair()['publicKeyPem'],
+    'keyRotations' => [],
+]);
+[, $optSess] = callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/sessions', [], [], 'client-opt', $carolOptDid, true);
+callExt($ext, 'POST', '/api/ext/arcade/v1/games/vector-rift/scores', [], [
+    'sessionId' => $optSess['sessionId'],
+    'score' => 9999,
+    'durationMs' => 12000,
+], 'client-opt', $carolOptDid, true);
+$ext->emit('user.extension_opt_out', ['did' => $carolOptDid, 'extensionId' => 'arcade']);
+[, $lbAfterOptOut] = callExt($ext, 'GET', '/api/ext/arcade/v1/games/vector-rift/scores');
+check(count($lbAfterOptOut['scores'] ?? []) === 0, 'user.extension_opt_out deletes all scores and history for opted-out player');
 
 if ($failures > 0) {
     echo "{$failures} check(s) failed\n";

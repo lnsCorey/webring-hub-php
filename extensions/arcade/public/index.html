@@ -19,23 +19,34 @@
     </header>
 
     <p class="trust-banner" role="note">
-      <strong>Leaderboards are for fun.</strong> Scores are reported by players' browsers and are
-      not checked, and anyone can play under any listed DID. A score is not proof of who played.
+      <strong>Verified DIDs, scores for fun.</strong> Player identities are verified by Ed25519
+      sign-in with Webring Studio and require opt-in. Gameplay scores are reported by players'
+      browsers and are for fun.
     </p>
 
     <section class="panel" aria-label="Player Identity">
       <div class="player-bar">
-        <label for="did-input"><strong>Player DID:</strong></label>
-        <input id="did-input" class="input" type="text" placeholder="did:web:alice.example" autocomplete="off" />
-        <button id="did-save-btn" class="btn btn-primary" type="button">Set Player</button>
-        <button id="did-history-btn" class="btn hidden" type="button">My Play History</button>
-        <button id="did-clear-btn" class="btn hidden" type="button">Clear</button>
         <span id="did-status" class="status-pill status-warn">Playing as Guest (scores not saved)</span>
+        <button id="auth-signin-btn" class="btn btn-primary" type="button">Sign in with Studio</button>
+        <button id="optin-btn" class="btn btn-primary hidden" type="button">Opt in to Record Scores</button>
+        <button id="did-history-btn" class="btn hidden" type="button">My Play History</button>
+        <button id="optout-btn" class="btn btn-danger hidden" type="button">Opt out &amp; Delete Scores</button>
+        <button id="auth-signout-btn" class="btn hidden" type="button">Sign out</button>
       </div>
-      <p class="notice">
-        Note: Games can be played without a DID. Leaderboards record scores for active hub DIDs (claimed DID mode for MVP).
+      <p class="notice" id="did-help">
+        Guests can play any game immediately. Sign in with Webring Studio and opt in to record public high scores under your verified DID.
       </p>
     </section>
+
+    <dialog id="arcade-auth-dialog" class="panel" aria-labelledby="arcade-auth-title">
+      <h2 id="arcade-auth-title" class="detail-title">Sign in with Webring Studio</h2>
+      <p class="notice">Approve this sign-in request with your Ed25519 key in Webring Studio.</p>
+      <p id="arcade-auth-status" class="notice" role="status" aria-live="polite"></p>
+      <div class="player-bar play-bar">
+        <a id="arcade-auth-link" class="btn btn-primary hidden" href="#">Open Webring Studio</a>
+        <button id="arcade-auth-cancel" class="btn" type="button">Cancel</button>
+      </div>
+    </dialog>
 
     <section class="panel" id="catalog-controls">
       <div class="player-bar">
@@ -51,18 +62,18 @@
     </section>
 
     <section id="detail-view" class="panel hidden">
-      <div class="player-bar" style="justify-content: space-between;">
-        <h2 id="detail-title" style="margin: 0;"></h2>
-        <div style="display: flex; gap: 0.5rem;">
-          <button id="play-start-btn" class="btn btn-primary" type="button">▶ Play Now</button>
+      <div class="player-bar player-bar-between">
+        <h2 id="detail-title" class="detail-title"></h2>
+        <div class="detail-actions">
+          <button id="play-start-btn" class="btn btn-primary" type="button">▶ 1P START</button>
           <button id="detail-close-btn" class="btn" type="button">Back to Games</button>
         </div>
       </div>
-      <p id="detail-desc" class="notice" style="font-size: 0.95rem;"></p>
-      <div id="detail-controls" class="tags" style="margin: 0.75rem 0;"></div>
+      <p id="detail-desc" class="notice detail-desc"></p>
+      <div id="detail-controls" class="tags detail-controls"></div>
 
       <div id="play-container" class="hidden">
-        <div class="player-bar" style="justify-content: space-between; margin-top: 0.75rem;">
+        <div class="player-bar player-bar-between play-bar">
           <span id="session-status" class="status-pill status-ok">Session Ready</span>
           <button id="play-stop-btn" class="btn btn-danger" type="button">Exit Game</button>
         </div>
@@ -80,7 +91,7 @@
       </div>
 
       <div class="leaderboard-head">
-        <h3>Leaderboard</h3>
+        <h3>High Scores</h3>
         <label class="filter-toggle" for="verified-only">
           <input id="verified-only" type="checkbox" />
           Verified only
@@ -89,7 +100,7 @@
       <table>
         <thead>
           <tr>
-            <th>#</th>
+            <th>Rank</th>
             <th>Player</th>
             <th>Score</th>
             <th>When</th>
@@ -100,8 +111,8 @@
     </section>
 
     <section id="history-view" class="panel hidden">
-      <div class="player-bar" style="justify-content: space-between;">
-        <h2 style="margin: 0;">Player History</h2>
+      <div class="player-bar player-bar-between">
+        <h2 class="detail-title">Player History</h2>
         <button id="history-close-btn" class="btn" type="button">Close</button>
       </div>
       <h3>Personal Bests</h3>
@@ -111,7 +122,7 @@
         </thead>
         <tbody id="history-bests-body"></tbody>
       </table>
-      <h3 style="margin-top: 1.25rem;">Recent Runs</h3>
+      <h3 class="section-heading-sp">Recent Runs</h3>
       <table>
         <thead>
           <tr><th>Game</th><th>Score</th><th>Duration</th><th>Finished</th></tr>

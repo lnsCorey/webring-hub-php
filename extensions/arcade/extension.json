@@ -1,7 +1,7 @@
 {
   "id": "arcade",
   "name": "Arcade",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": 1,
   "class": "WebringHub\\Ext\\Arcade\\ArcadeExtension",
   "description": "A self-hosted arcade of HTML/JavaScript games with DID high scores and play history.",
@@ -19,7 +19,82 @@
     "DELETE v1/admin/players/{did}",
     "DELETE v1/admin/games/{slug}/scores"
   ],
-  "events": ["entry.removed", "cron.refresh"],
+  "events": ["entry.removed", "cron.refresh", "user.extension_opt_out"],
   "tables": ["games", "scores", "plays", "sessions", "limits"],
-  "public": ["/ext/arcade/", "/ext/arcade/games/"]
+  "public": ["/ext/arcade/", "/ext/arcade/games/"],
+  "userData": {
+    "optInRequired": true,
+    "summary": "Stores your public high scores and play history under your verified DID."
+  },
+  "ui": {
+    "public": {
+      "title": "Arcade",
+      "tagline": "Self-hosted HTML5 games with high scores",
+      "href": "/ext/arcade/",
+      "cta": "Play now",
+      "art": "card.svg",
+      "accent": "magenta"
+    },
+    "admin": {
+      "panels": [
+        {
+          "id": "games",
+          "title": "Games",
+          "type": "table",
+          "source": "v1/admin/games",
+          "itemsKey": "games",
+          "rowKey": "slug",
+          "emptyMessage": "No games discovered in extensions/arcade/games/.",
+          "columns": [
+            { "key": "title", "label": "Game" },
+            { "key": "enabled", "label": "Status", "as": "badge" },
+            { "key": "version", "label": "Version", "as": "code" },
+            { "key": "plays", "label": "Plays" }
+          ],
+          "actions": [
+            {
+              "label": "Disable",
+              "method": "POST",
+              "path": "v1/admin/games/{slug}/enabled",
+              "body": { "enabled": false },
+              "when": { "key": "enabled", "equals": true },
+              "confirm": "Hide this game from players?"
+            },
+            {
+              "label": "Enable",
+              "method": "POST",
+              "path": "v1/admin/games/{slug}/enabled",
+              "body": { "enabled": true },
+              "when": { "key": "enabled", "equals": false }
+            },
+            {
+              "label": "Clear scores",
+              "method": "DELETE",
+              "path": "v1/admin/games/{slug}/scores",
+              "style": "danger",
+              "confirm": "Delete all high scores and play history for this game?"
+            }
+          ]
+        },
+        {
+          "id": "remove-player",
+          "title": "Remove a player",
+          "description": "Deletes all high scores and play history recorded for a player DID.",
+          "type": "form",
+          "method": "DELETE",
+          "path": "v1/admin/players/{did}",
+          "submitLabel": "Remove player",
+          "confirm": "Delete all arcade scores and play history for this DID?",
+          "fields": [
+            {
+              "name": "did",
+              "label": "Player DID",
+              "placeholder": "did:web:example.com",
+              "required": true
+            }
+          ]
+        }
+      ]
+    }
+  }
 }

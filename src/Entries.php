@@ -92,6 +92,13 @@ final class Entries
         if (!Database::deleteEntry($pdo, $did)) {
             return false;
         }
+        if (class_exists(Auth::class)) {
+            try {
+                Auth::purgeUser($pdo, $did);
+            } catch (\Throwable) {
+                // Auth tables may not exist yet when auto_migrate is off.
+            }
+        }
         $ext->emit('entry.removed', [
             'did' => $did,
             'siteUrl' => $row !== null ? (string) $row['site_url'] : '',
