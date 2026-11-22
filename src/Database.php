@@ -454,6 +454,81 @@ final class Database
                 SELECT did, site_url, 'blocked before this upgrade', updated_at FROM entries WHERE status = 'blocked'");
         };
 
+        // Cryptographic DID sign-in challenges, HttpOnly user sessions, and per-extension opt-in consents.
+        $steps['2026_11_did_auth'] = static function (PDO $pdo) use ($isSqlite): void {
+            if ($isSqlite) {
+                $pdo->exec("
+                    CREATE TABLE IF NOT EXISTS auth_challenges (
+                      id TEXT NOT NULL PRIMARY KEY,
+                      secret_hash TEXT NOT NULL,
+                      nonce TEXT NOT NULL,
+                      requested_ext TEXT NOT NULL DEFAULT '',
+                      approved_did TEXT DEFAULT NULL,
+                      approved_opt_in_json TEXT DEFAULT NULL,
+                      expires_at TEXT NOT NULL,
+                      claimed_at TEXT DEFAULT NULL,
+                      created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS user_sessions (
+                      token_hash TEXT NOT NULL PRIMARY KEY,
+                      did TEXT NOT NULL,
+                      csrf_token TEXT NOT NULL,
+                      created_at TEXT NOT NULL,
+                      last_seen_at TEXT NOT NULL,
+                      expires_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_user_sessions_did ON user_sessions (did);
+                    CREATE TABLE IF NOT EXISTS user_extension_consents (
+                      did TEXT NOT NULL,
+                      extension_id TEXT NOT NULL,
+                      opted_in INTEGER NOT NULL DEFAULT 0,
+                      opted_in_at TEXT DEFAULT NULL,
+                      opted_out_at TEXT DEFAULT NULL,
+                      PRIMARY KEY (did, extension_id)
+                    );
+                ");
+                return;
+            }
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS auth_challenges (
+                  id VARCHAR(64) NOT NULL,
+                  secret_hash CHAR(64) NOT NULL,
+                  nonce VARCHAR(64) NOT NULL,
+                  requested_ext VARCHAR(64) NOT NULL DEFAULT '',
+                  approved_did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+                  approved_opt_in_json TEXT DEFAULT NULL,
+                  expires_at VARCHAR(40) NOT NULL,
+                  claimed_at VARCHAR(40) DEFAULT NULL,
+                  created_at VARCHAR(40) NOT NULL,
+                  PRIMARY KEY (id),
+                  KEY idx_auth_challenges_expires (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+            ");
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                  token_hash CHAR(64) NOT NULL,
+                  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                  csrf_token VARCHAR(64) NOT NULL,
+                  created_at VARCHAR(40) NOT NULL,
+                  last_seen_at VARCHAR(40) NOT NULL,
+                  expires_at VARCHAR(40) NOT NULL,
+                  PRIMARY KEY (token_hash),
+                  KEY idx_user_sessions_did (did),
+                  KEY idx_user_sessions_expires (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+            ");
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS user_extension_consents (
+                  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                  extension_id VARCHAR(64) NOT NULL,
+                  opted_in TINYINT(1) NOT NULL DEFAULT 0,
+                  opted_in_at VARCHAR(40) DEFAULT NULL,
+                  opted_out_at VARCHAR(40) DEFAULT NULL,
+                  PRIMARY KEY (did, extension_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+            ");
+        };
+
         return $steps;
     }
 

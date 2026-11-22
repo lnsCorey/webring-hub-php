@@ -85,3 +85,40 @@ CREATE TABLE IF NOT EXISTS blocked_sites (
   PRIMARY KEY (did),
   KEY idx_blocked_sites_site_url (site_url)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+
+-- DID sign-in challenges, HttpOnly user sessions, and per-extension opt-in consents.
+CREATE TABLE IF NOT EXISTS auth_challenges (
+  id VARCHAR(64) NOT NULL,
+  secret_hash CHAR(64) NOT NULL,
+  nonce VARCHAR(64) NOT NULL,
+  requested_ext VARCHAR(64) NOT NULL DEFAULT '',
+  approved_did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+  approved_opt_in_json TEXT DEFAULT NULL,
+  expires_at VARCHAR(40) NOT NULL,
+  claimed_at VARCHAR(40) DEFAULT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_auth_challenges_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  token_hash CHAR(64) NOT NULL,
+  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  csrf_token VARCHAR(64) NOT NULL,
+  created_at VARCHAR(40) NOT NULL,
+  last_seen_at VARCHAR(40) NOT NULL,
+  expires_at VARCHAR(40) NOT NULL,
+  PRIMARY KEY (token_hash),
+  KEY idx_user_sessions_did (did),
+  KEY idx_user_sessions_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS user_extension_consents (
+  did VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  extension_id VARCHAR(64) NOT NULL,
+  opted_in TINYINT(1) NOT NULL DEFAULT 0,
+  opted_in_at VARCHAR(40) DEFAULT NULL,
+  opted_out_at VARCHAR(40) DEFAULT NULL,
+  PRIMARY KEY (did, extension_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

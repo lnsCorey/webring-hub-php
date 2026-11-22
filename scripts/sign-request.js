@@ -78,7 +78,11 @@ const { values } = parseArgs({
     created: { type: 'string' },
     dir: { type: 'string' },
     curl: { type: 'boolean' },
-    link: { type: 'boolean' }
+    link: { type: 'boolean' },
+    auth: { type: 'boolean' },
+    challenge: { type: 'string' },
+    'opt-in': { type: 'string' },
+    'opt-out': { type: 'string' }
   }
 });
 
@@ -120,6 +124,63 @@ if (!hubUrl) fail('--dir <hubUrl> is required so the signed removal request name
 const normalizedHubUrl = normalizeSiteUrl(hubUrl);
 
 const createdAt = values.created || new Date().toISOString();
+
+if (values.auth) {
+  const challengeId = String(values.challenge || '').trim();
+  const optInExtensions = String(values['opt-in'] || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .sort();
+  const payload = {
+    action: 'hub_auth',
+    hubUrl: normalizedHubUrl,
+    did,
+    siteUrl,
+    nonce,
+    challengeId,
+    optInExtensions,
+    createdAt
+  };
+  const signature = signPayload(payload, privateKeyPem);
+  const body = { did, siteUrl, hubUrl: normalizedHubUrl, nonce, challengeId, optInExtensions, createdAt, signature };
+  if (values.curl) {
+    console.log([
+      `curl -X POST '${hubUrl}/api/auth/verify'`,
+      `  -H 'content-type: application/json'`,
+      `  --data '${JSON.stringify(body)}'`
+    ].join(' \\\n'));
+  } else {
+    console.log(JSON.stringify(body, null, 2));
+  }
+  process.exit(0);
+}
+
+if (values['opt-out']) {
+  const extensionId = String(values['opt-out']).trim();
+  const payload = {
+    action: 'ext_opt_out',
+    hubUrl: normalizedHubUrl,
+    did,
+    siteUrl,
+    extensionId,
+    nonce,
+    createdAt
+  };
+  const signature = signPayload(payload, privateKeyPem);
+  const body = { did, siteUrl, hubUrl: normalizedHubUrl, nonce, createdAt, signature };
+  if (values.curl) {
+    console.log([
+      `curl -X POST '${hubUrl}/api/auth/extensions/${encodeURIComponent(extensionId)}/opt-out'`,
+      `  -H 'content-type: application/json'`,
+      `  --data '${JSON.stringify(body)}'`
+    ].join(' \\\n'));
+  } else {
+    console.log(JSON.stringify(body, null, 2));
+  }
+  process.exit(0);
+}
+
 const payload = { action: 'remove', siteUrl, did, hubUrl: normalizedHubUrl, nonce, createdAt };
 const signature = signPayload(payload, privateKeyPem);
 const body = { siteUrl, did, hubUrl: normalizedHubUrl, nonce, createdAt, signature };

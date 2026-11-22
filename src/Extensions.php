@@ -24,7 +24,7 @@ interface Extension
  */
 final class ExtensionContext
 {
-    /** @var list<array{method: string, pattern: string, regex: string, handler: callable, admin: bool, rateLimited: bool}> */
+    /** @var list<array{method: string, pattern: string, regex: string, handler: callable, admin: bool, rateLimited: bool, userAuth: bool, requireOptIn: bool}> */
     public array $routes = [];
 
     /** @var list<array{mountPath: string, realDir: string, index: string, cache: int, cors: bool, csp: string, frameable: bool, headers: mixed, allowedExtensions: array<string, string>}> */
@@ -256,6 +256,8 @@ final class ExtensionContext
             'handler' => $handler,
             'admin' => (bool) ($opts['admin'] ?? false),
             'rateLimited' => (bool) ($opts['rateLimited'] ?? false),
+            'userAuth' => (bool) ($opts['userAuth'] ?? false),
+            'requireOptIn' => (bool) ($opts['requireOptIn'] ?? false),
         ];
     }
 }
@@ -276,7 +278,9 @@ final class ExtensionRequest
         public readonly string $path,
         public readonly array $query,
         private $readBody,
-        public readonly string $clientKey = ''
+        public readonly string $clientKey = '',
+        public readonly ?string $userDid = null,
+        public readonly bool $userOptedIn = false
     ) {
     }
 
@@ -333,6 +337,7 @@ final class Extensions
         'entry.removed',
         'entry.status_changed',
         'cron.refresh',
+        'user.extension_opt_out',
     ];
 
     /** @var array<string, ExtensionContext> */
@@ -397,7 +402,35 @@ final class Extensions
             if ($ctx->ui['public'] !== null) {
                 $entry['ui'] = ['public' => $ctx->ui['public']];
             }
+            $ud = $ctx->manifest['userData'] ?? null;
+            if (is_array($ud) && !empty($ud['optInRequired'])) {
+                $entry['userData'] = [
+                    'optInRequired' => true,
+                    'summary' => mb_substr(trim((string) ($ud['summary'] ?? 'Stores user-specific data under your DID.')), 0, 240),
+                ];
+            }
             $out[] = $entry;
+        }
+        return $out;
+    }
+
+    /**
+     * Loaded extensions that declare `userData.optInRequired: true`.
+     *
+     * @return list<array{id: string, name: string, summary: string}>
+     */
+    public function userDataExtensions(): array
+    {
+        $out = [];
+        foreach ($this->loaded as $id => $ctx) {
+            $ud = $ctx->manifest['userData'] ?? null;
+            if (is_array($ud) && !empty($ud['optInRequired'])) {
+                $out[] = [
+                    'id' => $id,
+                    'name' => (string) ($ctx->manifest['name'] ?? $id),
+                    'summary' => mb_substr(trim((string) ($ud['summary'] ?? 'Stores user-specific data under your DID.')), 0, 240),
+                ];
+            }
         }
         return $out;
     }
@@ -588,7 +621,7 @@ final class Extensions
                             $params[$k] = $decoded;
                         }
                     }
-                    return ['route' => $route, 'params' => $params];
+                    return ['route' => $route, 'params' => $params, 'extensionId' => $ctx->id];
                 }
             }
         }
