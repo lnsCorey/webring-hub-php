@@ -11,6 +11,7 @@
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/style.css" />
+    <script src="/theme.js"></script>
   </head>
   <body>
     <header class="site-header">
@@ -27,9 +28,10 @@
                   <span class="brand-subtitle">Ed25519 Signed DID • Federated Profile Index</span>
                 </span>
               </a>
-              <div class="header-badges" aria-hidden="true">
-                <span class="status-pill status-pill-emerald">Signed DID Verified</span>
-                <span class="status-pill status-pill-indigo">did:web • Static JSON</span>
+              <div class="header-badges">
+                <span class="status-pill status-pill-emerald" aria-hidden="true">Signed DID Verified</span>
+                <span class="status-pill status-pill-indigo" aria-hidden="true">did:web • Static JSON</span>
+                <button class="hub-btn theme-toggle-btn" type="button" data-theme-toggle aria-label="Switch color theme">☀ Light</button>
               </div>
             </div>
             <p class="tagline">
