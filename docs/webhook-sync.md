@@ -209,3 +209,8 @@ All timestamps are stored as normalized UTC ISO-8601 strings (`YYYY-MM-DDTHH:mm:
 | `published_at` | `VARCHAR(40) NOT NULL` | `TEXT NOT NULL` | Normalized UTC `createdAt` |
 | `updated_at` | `VARCHAR(40) NULL` | `TEXT NULL` | Optional edit timestamp |
 | `raw_item_json` | `MEDIUMTEXT NOT NULL` | `TEXT NOT NULL` | Raw JSON object of the item |
+| `target_url` | `VARCHAR(500) COLLATE utf8mb4_bin NULL` | `TEXT NULL` | *(schema 2)* The item's `targetUrl` (http(s) only, ≤500 chars), indexed so replies can be matched to the item they answer. `canonical_url` is indexed and `utf8mb4_bin` from schema 2 as well. |
+
+### Events
+
+After a member's verified `items.json` is stored, the worker emits `ext.webhook-sync.items_changed` with `did`, `upserted` (item ids) and `removed` (pruned item ids). When all of a member's items are deleted (removal, block or opt-out), it emits the same event with `removedAll: true`. Other extensions, such as [`social`](social.md), listen for it instead of re-reading the whole table.

@@ -416,11 +416,22 @@ try {
         }
         $cookieToken = is_string($_COOKIE[Auth::SESSION_COOKIE] ?? null) ? $_COOKIE[Auth::SESSION_COOKIE] : '';
         $userSession = $cookieToken !== '' ? Auth::getSession($pdo, $cookieToken) : null;
+        $needsUser = !empty($match['route']['userAuth']) || !empty($match['route']['requireOptIn']);
+        if ($userSession !== null && !$needsUser && ($method === 'POST' || $method === 'DELETE')) {
+            // A route that doesn't require sign-in still sees who is signed in, but a write may
+            // only act as that member when it passes the CSRF check; otherwise it runs anonymously
+            // so a cross-site form can't ride the session cookie.
+            try {
+                Auth::requireCsrf($userSession, $_SERVER);
+            } catch (AppError) {
+                $userSession = null;
+            }
+        }
         $userDid = $userSession !== null ? $userSession['did'] : null;
         $extId = (string) ($match['extensionId'] ?? '');
         $userOptedIn = ($userDid !== null && $extId !== '') ? Auth::isOptedIn($pdo, $userDid, $extId) : false;
 
-        if (!empty($match['route']['userAuth']) || !empty($match['route']['requireOptIn'])) {
+        if ($needsUser) {
             if ($userSession === null) {
                 throw new AppError(401, 'auth_required', 'Sign in with your Webring Studio DID to use this feature.');
             }

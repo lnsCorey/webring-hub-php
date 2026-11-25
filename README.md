@@ -138,7 +138,7 @@ To keep listed profiles fresh and automatically mark unreachable sites as `stale
 6. **Check** that `/api/healthz` returns `{"ok":true}` and that a search on the public page works.
 7. **Go through the [Security & operations checklist](#security--operations-checklist)**, in particular the hub URL (self-service removal is off without it) and, on MySQL, the look-alike upgrade.
 
-Developers can run every check locally: `php scripts/smoke-security-phase1.php`, `…-phase3.php`, `…-phase4.php`, `…-phase5.php`, `php scripts/smoke-extensions.php`, `php scripts/smoke-arcade.php`, and `php scripts/smoke-router.php`. The last one starts the hub with `php -S` on a throwaway database and config and tests it over HTTP.
+Developers can run every check locally: `php scripts/smoke-security-phase1.php`, `…-phase3.php`, `…-phase4.php`, `…-phase5.php`, `php scripts/smoke-extensions.php`, `php scripts/smoke-arcade.php`, `php scripts/smoke-webhook-sync.php`, `php scripts/smoke-social.php`, and `php scripts/smoke-router.php`. The last one starts the hub with `php -S` on a throwaway database and config and tests it over HTTP.
 
 ---
 
@@ -269,6 +269,7 @@ When `maintainerBadge` is `true` and the maintainer's site (`maintainerUrl` / `m
 | `DELETE /api/admin/blocked/:did` | Lift a block whose listing is gone, so the owner can list the site again. `404` when it isn't blocked *(Bearer `admin_token`)* |
 | `GET /api/admin/extensions` | Enabled extensions (`extensions`: loaded or not, version, schema version, kind, declarative admin panels, `uiError`, routes, events, load errors) plus `available` (installed but not enabled folders with ready-to-paste `config.php` lines) *(Bearer `admin_token`)* |
 | `GET /api/ext/key-witness/v1/keys/:did` | *(key-witness extension)* The current key fingerprint for an active entry and the history of keys seen (`first-seen`, `rotated`, `operator-accepted`, `rejected`) |
+| `GET /api/ext/social/v1/feed`, `…/thread`, `…/me/activity` | *(social extension)* Conversations feed, threads and a member's activity; reactions and reports are `POST …/reactions` and `POST …/reports` (signed-in, opted-in members). See [docs/social.md](docs/social.md) |
 | `GET /api/healthz` | Health check (`{"ok":true}`) |
 
 ---
@@ -288,8 +289,10 @@ Included:
 
 - **`key-witness`**: records which signing key the hub saw for each listed site, and how any change was accepted. Webring Studio's **Check with Webring Hubs** button compares this with the key Studio pinned for a friend. When it's enabled, existing entries are filled in as `first-seen`.
 - **`arcade`**: self-hosted HTML5/JavaScript arcade at `/ext/arcade/` with sandboxed games (`vector-rift` and `starfall-siege` included), DID high-score leaderboards, play history, and operator moderation at `/ext/arcade/admin.html`.
+- **`webhook-sync`**: signed publish pings from Webring Studio sites, a background worker (`scripts/sync-worker.php`) that re-syncs changed sites, and a verified feed of members' `items.json` posts. See [docs/webhook-sync.md](docs/webhook-sync.md).
+- **`social`** (needs `webhook-sync`): **Conversations** at `/ext/social/`. Threads built from members' signed comments, one-tap reactions, member reports with admin hide/restore on `/admin`, and an Activity view of replies, mentions and reactions. Posts and comments stay on members' own sites; reactions and reports are stored only for members who opt in. See [docs/social.md](docs/social.md).
 
-Run `php scripts/smoke-extensions.php` and `php scripts/smoke-arcade.php` to check the framework, `key-witness`, and `arcade` against a temporary SQLite database.
+Run `php scripts/smoke-extensions.php`, `php scripts/smoke-arcade.php`, `php scripts/smoke-webhook-sync.php` and `php scripts/smoke-social.php` to check the framework and the included extensions against a temporary SQLite database.
 
 ## Self-service removal
 

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conversations — Webring Hub</title>
+    <meta name="description" content="Threads, reactions and mentions between verified members of this Webring Hub." />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="/theme.js"></script>
+  </head>
+  <body>
+    <header class="site-header has-banner">
+      <div class="wrap">
+        <div class="hero-card">
+          <div class="hero-body">
+            <div class="header-bar">
+              <a class="brand" href="/">
+                <img class="brand-logo" src="/logo-mark.png" width="44" height="44" alt="" />
+                <span class="brand-text">
+                  <span class="brand-title"><span class="brand-webring">Hub</span> <span class="brand-accent">Conversations</span></span>
+                  <span class="brand-subtitle">← Back to the hub</span>
+                </span>
+              </a>
+              <div class="header-badges">
+                <button class="hub-btn theme-toggle-btn" type="button" data-theme-toggle aria-label="Switch color theme">◐ System</button>
+                <div class="hub-auth-bar">
+                  <button id="hub-signin-btn" class="hub-btn" type="button">Sign in with Studio</button>
+                  <div id="hub-user-bar" class="hub-user-bar" hidden>
+                    <span id="hub-user-name" class="status-pill status-pill-indigo"></span>
+                    <button id="hub-mydata-btn" class="hub-btn" type="button">My Data</button>
+                    <button id="hub-signout-btn" class="hub-btn" type="button">Sign out</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="tagline">
+              Posts and comments members publish on their own sites with Webring Studio, gathered into threads.
+              React, follow replies and mentions here; reply from Studio.
+            </p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap social-main">
+      <div id="social-notice" class="social-notice" hidden></div>
+
+      <nav class="social-tabs" aria-label="Conversations views">
+        <a class="social-tab" href="#feed" data-tab="feed">Feed</a>
+        <a class="social-tab" href="#activity" data-tab="activity">Activity <span id="activity-badge" class="social-badge" hidden></span></a>
+      </nav>
+
+      <section id="view-feed" class="social-view" aria-live="polite">
+        <div class="social-filter" role="group" aria-label="Filter by type">
+          <button type="button" class="hub-btn" data-type="" aria-pressed="true">All</button>
+          <button type="button" class="hub-btn" data-type="post" aria-pressed="false">Posts</button>
+          <button type="button" class="hub-btn" data-type="share" aria-pressed="false">Shares</button>
+          <button type="button" class="hub-btn" data-type="recommendation" aria-pressed="false">Recommendations</button>
+        </div>
+        <div id="feed-list" class="social-list"></div>
+        <p id="feed-status" class="hint social-status"></p>
+        <button id="feed-more" class="hub-btn social-more" type="button" hidden>Load more</button>
+      </section>
+
+      <section id="view-thread" class="social-view" hidden>
+        <button id="thread-back" class="hub-btn" type="button">← Back</button>
+        <div id="thread-root" class="social-thread"></div>
+        <p id="thread-status" class="hint social-status"></p>
+        <p class="hint social-reply-hint">
+          To reply, open Webring Studio and publish a <strong>comment</strong> whose target is this post's link
+          (use <em>Copy link</em>). It appears here after your site syncs.
+        </p>
+      </section>
+
+      <section id="view-activity" class="social-view" hidden>
+        <div id="activity-gate" class="panel social-gate" hidden></div>
+        <div id="activity-list" class="social-list"></div>
+        <p id="activity-status" class="hint social-status"></p>
+        <button id="activity-more" class="hub-btn social-more" type="button" hidden>Load more</button>
+      </section>
+    </main>
+
+    <dialog id="report-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="report-title">
+      <form id="report-form" method="dialog">
+        <h2 id="report-title">Report this item</h2>
+        <p class="hint">The hub admin reviews reports. Hiding only affects this hub, never the member's own site.</p>
+        <fieldset id="report-reasons" class="social-reasons">
+          <legend>Reason</legend>
+        </fieldset>
+        <label class="social-label" for="report-note">Note for the admin (optional)</label>
+        <textarea id="report-note" maxlength="500" rows="3"></textarea>
+        <p id="report-status" class="form-message" role="status" aria-live="polite"></p>
+        <div class="hub-dialog-actions">
+          <button id="report-submit" class="hub-btn hub-btn-danger" type="submit" value="send">Send report</button>
+          <button class="hub-btn" type="submit" value="cancel" formnovalidate>Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="auth-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="auth-dialog-title">
+      <h2 id="auth-dialog-title">Sign in with Webring Studio</h2>
+      <p class="hint">
+        Verify your listed <code>did:web</code> identity using your Ed25519 key in Webring Studio.
+        No passwords or third-party accounts are used.
+      </p>
+      <p id="auth-status" class="form-message" role="status" aria-live="polite"></p>
+      <div class="hub-dialog-actions">
+        <a id="auth-launch-link" class="button" href="#" hidden>Open Webring Studio</a>
+        <button id="auth-cancel-btn" class="hub-btn" type="button">Cancel</button>
+      </div>
+      <details class="hub-cli-fallback">
+        <summary>CLI / another device fallback</summary>
+        <p class="hint">Sign this challenge from the terminal using your Ed25519 private key:</p>
+        <pre id="auth-cli-cmd" class="hub-cli-cmd"></pre>
+      </details>
+    </dialog>
+
+    <dialog id="mydata-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="mydata-dialog-title">
+      <h2 id="mydata-dialog-title">My Data &amp; Extension Privacy</h2>
+      <p class="hint">Signed in as <code id="mydata-did"></code>. Opting out of an extension deletes all data it stores for your DID.</p>
+      <div id="mydata-list" class="mydata-list"></div>
+      <p id="mydata-status" class="form-message" role="status" aria-live="polite"></p>
+      <div class="hub-dialog-actions">
+        <button id="mydata-close-btn" class="hub-btn" type="button">Close</button>
+      </div>
+    </dialog>
+
+    <script type="module" src="/hub-auth.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

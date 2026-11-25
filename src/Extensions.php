@@ -19,6 +19,14 @@ interface Extension
 }
 
 /**
+ * Thrown while loading when an extension's `reads` dependency has not loaded yet; the loader
+ * retries it after the others.
+ */
+final class ExtensionDependencyPending extends \RuntimeException
+{
+}
+
+/**
  * The host API handed to one extension. Everything an extension adds goes through here so its
  * routes, tables and settings stay inside its own namespace.
  */
@@ -32,6 +40,20 @@ final class ExtensionContext
 
     /** @var array<string, list<callable>> */
     public array $listeners = [];
+
+    /**
+     * Set by Extensions when the context is loaded; broadcasts `ext.<id>.<name>` events.
+     *
+     * @var (\Closure(string, array<string, mixed>): void)|null
+     */
+    public ?\Closure $emitter = null;
+
+    /**
+     * Loaded contexts of the extensions this one declared in `reads`, set by Extensions.
+     *
+     * @var array<string, ExtensionContext>
+     */
+    public array $readable = [];
 
     /** @var array{kind: string, public: ?array<string, mixed>, panels: list<array<string, mixed>>, error: ?string} */
     public array $ui = [
@@ -59,7 +81,7 @@ final class ExtensionContext
      * segment; the handler receives `(array $params, ExtensionRequest $req)` and returns the
      * JSON body (status 200) or an `[int $status, array $body]` pair.
      *
-     * @param array{admin?: bool, rateLimited?: bool} $opts
+     * @param array{admin?: bool, rateLimited?: bool, userAuth?: bool, requireOptIn?: bool} $opts
      */
     public function get(string $subPath, callable $handler, array $opts = []): void
     {
@@ -67,7 +89,7 @@ final class ExtensionContext
     }
 
     /**
-     * @param array{admin?: bool, rateLimited?: bool} $opts
+     * @param array{admin?: bool, rateLimited?: bool, userAuth?: bool, requireOptIn?: bool} $opts
      */
     public function post(string $subPath, callable $handler, array $opts = []): void
     {
@@ -75,7 +97,7 @@ final class ExtensionContext
     }
 
     /**
-     * @param array{admin?: bool, rateLimited?: bool} $opts
+     * @param array{admin?: bool, rateLimited?: bool, userAuth?: bool, requireOptIn?: bool} $opts
      */
     public function delete(string $subPath, callable $handler, array $opts = []): void
     {
@@ -141,14 +163,44 @@ final class ExtensionContext
     }
 
     /**
-     * Listens for a core event (see Extensions::EVENTS). The handler receives the payload array.
+     * Listens for a core event (see Extensions::EVENTS), or for an event another extension emits,
+     * named `ext.<id>.<name>`. The handler receives the payload array.
      */
     public function on(string $event, callable $handler): void
     {
-        if (!in_array($event, Extensions::EVENTS, true)) {
+        if (!in_array($event, Extensions::EVENTS, true) && !preg_match(Extensions::EXT_EVENT_PATTERN, $event)) {
             throw new \InvalidArgumentException("Unknown event {$event}.");
         }
         $this->listeners[$event][] = $handler;
+    }
+
+    /**
+     * Broadcasts `ext.<this id>.<name>` to every listener. Call it only after your own changes are
+     * committed: like core events, listeners run inline and their failures are logged and ignored.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function emit(string $name, array $payload): void
+    {
+        if (!preg_match('/^[a-z][a-z0-9_]{0,40}$/', $name)) {
+            throw new \InvalidArgumentException('Event names must be lowercase letters, digits and _.');
+        }
+        if ($this->emitter !== null) {
+            ($this->emitter)("ext.{$this->id}.{$name}", $payload);
+        }
+    }
+
+    /**
+     * The table name of another extension this one declared in its manifest's `reads` list.
+     * Read it only: never write to another extension's tables.
+     */
+    public function readTable(string $extId, string $suffix): string
+    {
+        $other = $this->readable[$extId] ?? null;
+        if ($other === null) {
+            throw new \RuntimeException("Extension {$this->id} did not declare \"reads\": [\"{$extId}\"], or {$extId} is not loaded.");
+        }
+        return $other->table($suffix);
     }
 
     /**
@@ -254,7 +306,7 @@ final class ExtensionContext
     }
 
     /**
-     * @param array{admin?: bool, rateLimited?: bool} $opts
+     * @param array{admin?: bool, rateLimited?: bool, userAuth?: bool, requireOptIn?: bool} $opts
      */
     private function addRoute(string $method, string $subPath, callable $handler, array $opts): void
     {
@@ -356,6 +408,9 @@ final class Extensions
         'user.extension_opt_out',
     ];
 
+    /** Events extensions emit themselves: `ext.<id>.<name>`. */
+    public const EXT_EVENT_PATTERN = '/^ext\.[a-z][a-z0-9-]{1,40}\.[a-z][a-z0-9_]{0,40}$/';
+
     /** @var array<string, ExtensionContext> */
     private array $loaded = [];
 
@@ -385,17 +440,34 @@ final class Extensions
         $root ??= dirname(__DIR__) . '/extensions';
         $self = new self($root);
         $ids = is_array($config['extensions'] ?? null) ? $config['extensions'] : [];
+        $pending = [];
         foreach ($ids as $id) {
-            if (!is_string($id)) {
-                continue;
+            if (is_string($id) && !in_array($id, $self->enabled, true)) {
+                $self->enabled[] = $id;
+                $pending[] = $id;
             }
-            $self->enabled[] = $id;
-            try {
-                $self->loadOne($id, $config, $pdo);
-            } catch (\Throwable $err) {
-                $self->errors[$id] = $err->getMessage() ?: 'Could not load the extension.';
-                error_log("[webring-hub-php] extension {$id}: " . $self->errors[$id]);
+        }
+        // Extensions that declare `reads` load after the ones they read, whatever the config order.
+        while ($pending !== []) {
+            $deferred = [];
+            foreach ($pending as $id) {
+                try {
+                    $self->loadOne($id, $config, $pdo);
+                    unset($self->errors[$id]);
+                } catch (ExtensionDependencyPending $wait) {
+                    $deferred[] = $id;
+                    $self->errors[$id] = $wait->getMessage();
+                } catch (\Throwable $err) {
+                    $self->errors[$id] = $err->getMessage() ?: 'Could not load the extension.';
+                }
             }
+            if (count($deferred) === count($pending)) {
+                break; // no progress: a dependency failed to load
+            }
+            $pending = $deferred;
+        }
+        foreach ($self->errors as $id => $message) {
+            error_log("[webring-hub-php] extension {$id}: " . $message);
         }
         return $self;
     }
@@ -829,6 +901,23 @@ final class Extensions
         if ((int) ($manifest['apiVersion'] ?? 0) !== self::API_VERSION) {
             throw new \RuntimeException('Unsupported extension apiVersion (this hub supports ' . self::API_VERSION . ').');
         }
+        $reads = $manifest['reads'] ?? [];
+        if (!is_array($reads) || !array_is_list($reads)) {
+            throw new \RuntimeException('extension.json "reads" must be a list of extension ids.');
+        }
+        $readable = [];
+        foreach ($reads as $dep) {
+            if (!is_string($dep) || !preg_match('/^[a-z][a-z0-9-]{1,40}$/', $dep) || $dep === $id) {
+                throw new \RuntimeException('extension.json "reads" must list other extension ids.');
+            }
+            if (!in_array($dep, $this->enabled, true)) {
+                throw new \RuntimeException("{$id} needs the {$dep} extension: add '{$dep}' to 'extensions' in config.php.");
+            }
+            if (!isset($this->loaded[$dep])) {
+                throw new ExtensionDependencyPending("{$id} needs the {$dep} extension, which did not load.");
+            }
+            $readable[$dep] = $this->loaded[$dep];
+        }
         $class = (string) ($manifest['class'] ?? '');
         if (!preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*$/', $class)) {
             throw new \RuntimeException('extension.json must name the extension class.');
@@ -846,6 +935,10 @@ final class Extensions
             throw new \RuntimeException("{$class} does not implement WebringHub\\Extension.");
         }
         $ctx = new ExtensionContext($id, $manifest, $pdo, $config, $dir);
+        $ctx->readable = $readable;
+        $ctx->emitter = function (string $event, array $payload): void {
+            $this->emit($event, $payload);
+        };
         $instance->register($ctx);
         $ctx->ui = ExtensionUi::normalise($manifest, $ctx);
         $this->loaded[$id] = $ctx;
