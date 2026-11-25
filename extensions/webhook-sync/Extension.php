@@ -66,6 +66,10 @@ final class WebhookSyncExtension implements Extension
         $ctx->migrate(2, function (PDO $pdo, string $driver): void {
             $this->addTargetUrl($pdo, $driver);
         });
+        // Schema v3: Studio posts carry their own canonical URL as `targetUrl`; that isn't a reply target.
+        $ctx->migrate(3, function (PDO $pdo, string $driver): void {
+            $pdo->exec("UPDATE {$this->itemsTable} SET target_url = NULL WHERE target_url = canonical_url");
+        });
 
         $ctx->on('entry.removed', fn (array $e) => $this->purgeDid((string) ($e['did'] ?? '')));
         $ctx->on('entry.status_changed', function (array $e): void {
@@ -1010,7 +1014,7 @@ final class WebhookSyncExtension implements Extension
                     continue;
                 }
 
-                $stmt->execute([$did, $itemId, $canonicalUrl, $type, $publishedAt, $updatedAt, $rawJson, self::normalizeTargetUrl($item['targetUrl'] ?? null)]);
+                $stmt->execute([$did, $itemId, $canonicalUrl, $type, $publishedAt, $updatedAt, $rawJson, self::normalizeTargetUrl($item['targetUrl'] ?? null, $canonicalUrl)]);
                 $seenIds[] = $itemId;
             }
 
@@ -1095,13 +1099,17 @@ final class WebhookSyncExtension implements Extension
      * An item's `targetUrl` as stored for reply lookups: trimmed, http(s) only, at most 500
      * characters; anything else is null.
      */
-    public static function normalizeTargetUrl(mixed $raw): ?string
+    public static function normalizeTargetUrl(mixed $raw, ?string $canonicalUrl = null): ?string
     {
         if (!is_string($raw)) {
             return null;
         }
         $url = trim($raw);
         if ($url === '' || strlen($url) > 500 || !preg_match('#^https?://[^\s]+$#i', $url)) {
+            return null;
+        }
+        // An item pointing at itself (Studio sets a post's targetUrl to its own canonicalUrl) has no target.
+        if ($canonicalUrl !== null && $url === trim($canonicalUrl)) {
             return null;
         }
         return $url;
@@ -1149,11 +1157,11 @@ final class WebhookSyncExtension implements Extension
             $pdo->exec("ALTER TABLE {$t} " . implode(', ', $alter));
         }
 
-        $sel = $pdo->query("SELECT did, item_id, raw_item_json FROM {$t} WHERE target_url IS NULL");
+        $sel = $pdo->query("SELECT did, item_id, canonical_url, raw_item_json FROM {$t} WHERE target_url IS NULL");
         $upd = $pdo->prepare("UPDATE {$t} SET target_url = ? WHERE did = ? AND item_id = ?");
         foreach ($sel->fetchAll() as $row) {
             $item = json_decode((string) $row['raw_item_json'], true);
-            $target = is_array($item) ? self::normalizeTargetUrl($item['targetUrl'] ?? null) : null;
+            $target = is_array($item) ? self::normalizeTargetUrl($item['targetUrl'] ?? null, (string) $row['canonical_url']) : null;
             if ($target !== null) {
                 $upd->execute([$target, $row['did'], $row['item_id']]);
             }

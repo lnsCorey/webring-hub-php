@@ -180,6 +180,7 @@ final class SocialExtension implements Extension
                   AND NOT EXISTS (
                     SELECT 1 FROM {$this->tItems} p JOIN entries pe ON pe.did = p.did
                     WHERE i.target_url IS NOT NULL AND p.canonical_url = i.target_url AND pe.status = 'active' AND {$owned}
+                      AND NOT (p.did = i.did AND p.item_id = i.item_id)
                   )
                   AND NOT EXISTS (SELECT 1 FROM {$this->tHidden} h WHERE h.item_did = i.did AND h.item_id = i.item_id)";
         $args = [];
@@ -957,7 +958,7 @@ final class SocialExtension implements Extension
     private function parentOf(array $row): ?array
     {
         $target = (string) ($row['target_url'] ?? '');
-        if ($target === '') {
+        if ($target === '' || $target === (string) ($row['canonical_url'] ?? '')) {
             return null;
         }
         $stmt = $this->ctx->pdo()->prepare(
