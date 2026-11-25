@@ -224,17 +224,33 @@ final class ExtensionContext
 
     /**
      * Fetches public JSON with the same guard the hub uses for sites (https only, no
-     * private addresses, size and time limits).
+     * private addresses, size and time limits). Optional conditional request headers,
+     * budgetMs, and deadline may be supplied; security flags always come from hub config.
      *
-     * @return array{url: string, status: int, headers: array<string, string>, json: mixed, jsonObject: mixed}
+     * @param array{headers?: list<string>, budgetMs?: int, deadline?: float, maxBytes?: int} $options
+     * @return array{url: string, status: int, headers: array<string, string>, json: mixed, jsonObject: mixed, rawBody: string}
      */
-    public function fetchJson(string $url): array
+    public function fetchJson(string $url, array $options = []): array
     {
-        return Net::safeGetJson($url, [
+        $merged = [
             'allowInsecure' => !empty($this->config['allow_insecure']),
             'allowPrivate' => !empty($this->config['allow_private_hosts']),
             'timeoutMs' => (int) ($this->config['refresh_timeout_ms'] ?? 8000),
-        ]);
+            'budgetMs' => max(1000, (int) ($options['budgetMs'] ?? $this->config['fetch_budget_ms'] ?? 15000)),
+            'maxBytes' => min(Site::MAX_JSON_BYTES, max(1024, (int) ($options['maxBytes'] ?? Site::MAX_JSON_BYTES))),
+        ];
+        if (isset($options['headers']) && is_array($options['headers'])) {
+            $merged['headers'] = $options['headers'];
+        }
+        if (isset($options['deadline']) && is_float($options['deadline'])) {
+            $merged['deadline'] = $options['deadline'];
+        }
+        return Net::safeGetJson($url, $merged);
+    }
+
+    public function fetchBudgetMs(): int
+    {
+        return max(1000, (int) ($this->config['fetch_budget_ms'] ?? Site::DEFAULT_BUDGET_MS));
     }
 
     /**
@@ -575,6 +591,11 @@ final class Extensions
         return isset($this->loaded[$id]);
     }
 
+    public function context(string $id): ?ExtensionContext
+    {
+        return $this->loaded[$id] ?? null;
+    }
+
     /**
      * Sends an event to every listener. Runs after the core has committed, and never lets a
      * listener's failure reach the caller.
@@ -737,16 +758,26 @@ final class Extensions
     }
 
     /**
-     * Calls a matched route's handler and normalises its result to `[status, body]`.
+     * Calls a matched route's handler and normalises its result to `[status, body]`
+     * (or `[status, body, headers]` when explicit response headers are supplied).
      *
      * @param array{route: array<string, mixed>, params: array<string, string>} $match
-     * @return array{0: int, 1: array<string, mixed>}
+     * @return array{0: int, 1: array<string, mixed>, 2?: array<string, string>}
      */
     public static function run(array $match, ExtensionRequest $req): array
     {
         $result = ($match['route']['handler'])($match['params'], $req);
-        if (is_array($result) && array_is_list($result) && count($result) === 2 && is_int($result[0]) && is_array($result[1])) {
-            return [$result[0], $result[1]];
+        if (is_array($result) && array_is_list($result)) {
+            if (count($result) === 2 && is_int($result[0]) && is_array($result[1])) {
+                return [$result[0], $result[1]];
+            }
+            if (count($result) === 3 && is_int($result[0]) && is_array($result[1]) && is_array($result[2])) {
+                $headers = [];
+                foreach ($result[2] as $k => $v) {
+                    $headers[(string) $k] = (string) $v;
+                }
+                return [$result[0], $result[1], $headers];
+            }
         }
         if (!is_array($result)) {
             throw new AppError(500, 'extension_error', 'The extension returned an invalid response.');

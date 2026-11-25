@@ -1,0 +1,62 @@
+{
+  "id": "webhook-sync",
+  "name": "Webhook Sync & Feed Relay",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "class": "WebringHub\\Ext\\WebhookSync\\WebhookSyncExtension",
+  "description": "Fast-acknowledge signed webhook ping queue, conditional differential static-site crawler, and verified feed relay for Webring Studio nodes.",
+  "author": "Webring Suite",
+  "homepage": "",
+  "routes": [
+    "POST v1/ping",
+    "GET v1/feed",
+    "GET v1/admin/summary",
+    "GET v1/admin/queue"
+  ],
+  "events": [
+    "entry.verified",
+    "entry.removed",
+    "entry.status_changed",
+    "user.extension_opt_out"
+  ],
+  "tables": [
+    "queue",
+    "state",
+    "items"
+  ],
+  "ui": {
+    "admin": {
+      "panels": [
+        {
+          "id": "sync-overview",
+          "title": "Webhook Sync & Feed Overview",
+          "type": "stats",
+          "source": "v1/admin/summary",
+          "items": [
+            { "key": "pendingQueue", "label": "Pending queue" },
+            { "key": "processingQueue", "label": "Processing" },
+            { "key": "failedQueue", "label": "Failed (max retries)" },
+            { "key": "syncedSites", "label": "Synced sites" },
+            { "key": "indexedItems", "label": "Verified feed items" }
+          ]
+        },
+        {
+          "id": "sync-queue",
+          "title": "Sync Queue",
+          "type": "table",
+          "source": "v1/admin/queue?limit=50",
+          "itemsKey": "queue",
+          "emptyMessage": "No webhook sync jobs queued yet.",
+          "columns": [
+            { "key": "did", "label": "Member DID", "as": "code" },
+            { "key": "status", "label": "Status", "as": "badge" },
+            { "key": "attempts", "label": "Attempts" },
+            { "key": "requestedAt", "label": "Requested", "as": "time" },
+            { "key": "nextAttemptAt", "label": "Next attempt", "as": "time" },
+            { "key": "lastError", "label": "Last error" }
+          ]
+        }
+      ]
+    }
+  }
+}

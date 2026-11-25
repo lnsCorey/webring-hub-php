@@ -322,6 +322,14 @@ final class Net
         $allowInsecure = (bool) ($options['allowInsecure'] ?? false);
         $allowPrivate = (bool) ($options['allowPrivate'] ?? false);
         $userAgent = (string) ($options['userAgent'] ?? self::DEFAULT_USER_AGENT);
+        $extraHeaders = [];
+        if (isset($options['headers']) && is_array($options['headers'])) {
+            foreach ($options['headers'] as $hdr) {
+                if (is_string($hdr) && $hdr !== '' && !str_contains($hdr, "\r") && !str_contains($hdr, "\n")) {
+                    $extraHeaders[] = $hdr;
+                }
+            }
+        }
         $deadline = microtime(true) + ($budgetMs / 1000.0);
         // A caller verifying several documents passes one shared deadline (Site::verifySite), so
         // the whole verification, not each fetch, is bounded.
@@ -353,7 +361,8 @@ final class Net
 
             $host = self::normalizeAndValidateHost((string) $parts['host']);
             $port = isset($parts['port']) ? (int) $parts['port'] : ($scheme === 'https' ? 443 : 80);
-            if ($port !== 443 && !($allowInsecure && $scheme === 'http' && $port === 80)) {
+            $allowDevPort = $allowInsecure && $allowPrivate && $port >= 1 && $port <= 65535;
+            if ($port !== 443 && !($allowInsecure && $scheme === 'http' && $port === 80) && !$allowDevPort) {
                 throw new AppError(400, 'unsafe_port', 'Only standard HTTPS port 443 is allowed.');
             }
 
@@ -373,7 +382,7 @@ final class Net
             // DNS lookups can't be interrupted, so re-check the budget once they return.
             $hopTimeoutMs = min($timeoutMs, $remaining());
 
-            $result = self::requestOnce($rebuiltUrl, $host, $port, $pinnedIp, $hopTimeoutMs, $maxBytes, $userAgent);
+            $result = self::requestOnce($rebuiltUrl, $host, $port, $pinnedIp, $hopTimeoutMs, $maxBytes, $userAgent, $extraHeaders);
             if (isset($result['redirect'])) {
                 if ($hop === $maxRedirects) {
                     throw new AppError(502, 'too_many_redirects', 'The remote site redirected too many times.');
@@ -385,9 +394,10 @@ final class Net
             return [
                 'url' => $rebuiltUrl,
                 'status' => $result['status'],
-                'headers' => $result['headers'],
-                'json' => $result['json'],
-                'jsonObject' => $result['jsonObject'],
+                'headers' => $result['headers'] ?? [],
+                'json' => $result['json'] ?? null,
+                'jsonObject' => $result['jsonObject'] ?? null,
+                'rawBody' => $result['rawBody'] ?? '',
             ];
         }
 
@@ -395,7 +405,8 @@ final class Net
     }
 
     /**
-     * @return array{status: int, redirect?: string, headers?: array<string, string>, json?: mixed, jsonObject?: mixed}
+     * @param list<string> $extraHeaders
+     * @return array{status: int, redirect?: string, headers?: array<string, string>, json?: mixed, jsonObject?: mixed, rawBody?: string}
      */
     private static function requestOnce(
         string $url,
@@ -404,7 +415,8 @@ final class Net
         string $pinnedIp,
         int $timeoutMs,
         int $maxBytes,
-        string $userAgent
+        string $userAgent,
+        array $extraHeaders = []
     ): array {
         $ch = curl_init($url);
         if ($ch === false) {
@@ -422,11 +434,11 @@ final class Net
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_TIMEOUT_MS => max($timeoutMs, 1000),
             CURLOPT_CONNECTTIMEOUT_MS => max(min($timeoutMs, 5000), 1000),
-            CURLOPT_HTTPHEADER => [
+            CURLOPT_HTTPHEADER => array_merge([
                 'Accept: application/json',
                 'Accept-Encoding: identity',
                 'User-Agent: ' . $userAgent,
-            ],
+            ], $extraHeaders),
             CURLOPT_RESOLVE => ["{$resolveHost}:{$port}:{$formattedIp}"],
             CURLOPT_HEADERFUNCTION => static function ($curl, string $headerLine) use (&$responseHeaders): int {
                 $len = strlen($headerLine);
@@ -470,6 +482,16 @@ final class Net
             throw new AppError(502, 'fetch_failed', 'The remote connection did not match the validated address.');
         }
 
+        if ($status === 304) {
+            return [
+                'status' => 304,
+                'headers' => $responseHeaders,
+                'json' => null,
+                'jsonObject' => null,
+                'rawBody' => '',
+            ];
+        }
+
         if ($status >= 300 && $status < 400) {
             $location = $responseHeaders['location'] ?? '';
             if ($location === '') {
@@ -500,6 +522,7 @@ final class Net
             'headers' => $responseHeaders,
             'json' => $jsonAssoc,
             'jsonObject' => $jsonObj,
+            'rawBody' => $cleanBody,
         ];
     }
 }

@@ -441,8 +441,8 @@ try {
             $userDid,
             $userOptedIn
         );
-        [$status, $body] = Extensions::run($match, $request);
-        sendJson($status, $body, [], $method === 'HEAD');
+        $res = Extensions::run($match, $request);
+        sendJson($res[0], $res[1], $res[2] ?? [], $method === 'HEAD');
     };
 
     if ($method === 'GET' || $method === 'HEAD') {
