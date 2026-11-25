@@ -158,6 +158,9 @@ final class MyExtension implements Extension
 | `entryByDid(string $did)` | Read-only core entry row, or `null`. |
 | `fetchJson(string $url)` | `Net::safeGetJson` with the hub's guard settings: https only, no private addresses, size and time limits. |
 | `isoNow()` | The core's timestamp format. |
+| `hubUrl()` | This hub's canonical URL (`hub_url`), without a trailing slash, or `''`. For links in feeds and calendars. |
+
+A handler may also return a `WebringHub\ExtensionRawResponse($status, $body, $contentType, $headers)` for a calendar or feed. Only `text/calendar`, `application/atom+xml`, `text/plain` and `text/csv` are accepted, and the hub sends it with `Content-Security-Policy: default-src 'none'`.
 
 A route handler receives `(array $params, ExtensionRequest $req)`. `$req` has `method`, `path`, `query`, `json()` (the request body, read on demand) and `clientKey`: a salted hash that identifies the caller's IP address without revealing it, for your own per-client limits. Never store raw IPs. `$req->userDid` is the signed-in member's DID (or `null`) and `$req->userOptedIn` says whether they opted in to your extension. On a POST or DELETE to a route without `userAuth`/`requireOptIn`, `userDid` is only set when the request also passes the CSRF check, so a cross-site form can't act as the member. The handler returns either an array (sent as JSON with status 200) or `[int $status, array $body]`. Throw `WebringHub\AppError` for error responses, for example `new AppError(404, 'not_found', 'No such entry.')`; they use the core's `{error, message}` shape.
 

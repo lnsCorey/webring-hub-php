@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="./style.css" />
     <script src="/theme.js"></script>
   </head>
-  <body>
+  <body class="social-page">
     <header class="site-header has-banner">
       <div class="wrap">
         <div class="hero-card">
@@ -50,6 +50,10 @@
 
       <nav class="social-tabs" aria-label="Conversations views">
         <a class="social-tab" href="#feed" data-tab="feed">Feed</a>
+        <a class="social-tab" href="#events" data-tab="events">Events</a>
+        <a class="social-tab" href="#board" data-tab="board">Asks &amp; offers</a>
+        <a class="social-tab" href="#polls" data-tab="polls">Polls</a>
+        <a class="social-tab" href="#digest" data-tab="digest">This week</a>
         <a class="social-tab" href="#activity" data-tab="activity">Activity <span id="activity-badge" class="social-badge" hidden></span></a>
       </nav>
 
@@ -75,6 +79,60 @@
         </p>
       </section>
 
+      <section id="view-events" class="social-view" hidden>
+        <div class="social-toolbar">
+          <div class="social-filter" role="group" aria-label="Which events">
+            <button type="button" class="hub-btn" data-when="upcoming" aria-pressed="true">Upcoming</button>
+            <button type="button" class="hub-btn" data-when="past" aria-pressed="false">Past</button>
+          </div>
+          <a id="events-ics" class="hub-btn social-subscribe" href="../../api/ext/social/v1/events.ics" hidden>📅 Subscribe to the calendar</a>
+        </div>
+        <div id="events-list" class="social-list"></div>
+        <p id="events-status" class="hint social-status"></p>
+        <p class="hint social-reply-hint">Members add events from Webring Studio: compose a post and choose <strong>Event</strong>.</p>
+      </section>
+
+      <section id="view-board" class="social-view" hidden>
+        <div class="social-toolbar">
+          <div class="social-filter" role="group" aria-label="Asks or offers">
+            <button type="button" class="hub-btn" data-kind="" aria-pressed="true">All</button>
+            <button type="button" class="hub-btn" data-kind="ask" aria-pressed="false">Asks</button>
+            <button type="button" class="hub-btn" data-kind="offer" aria-pressed="false">Offers</button>
+          </div>
+          <div class="social-filter" role="group" aria-label="Open or closed">
+            <button type="button" class="hub-btn" data-status="open" aria-pressed="true">Open</button>
+            <button type="button" class="hub-btn" data-status="closed" aria-pressed="false">Closed</button>
+          </div>
+        </div>
+        <div id="board-list" class="social-list"></div>
+        <p id="board-status" class="hint social-status"></p>
+        <p class="hint social-reply-hint">
+          Need a hand, or have something to share? In Webring Studio compose a post and choose <strong>Ask</strong> or <strong>Offer</strong>.
+          Tags are matched against members' interests. Reply from Studio to respond.
+        </p>
+      </section>
+
+      <section id="view-polls" class="social-view" hidden>
+        <div class="social-toolbar">
+          <div class="social-filter" role="group" aria-label="Open or closed polls">
+            <button type="button" class="hub-btn" data-poll-status="open" aria-pressed="true">Open</button>
+            <button type="button" class="hub-btn" data-poll-status="closed" aria-pressed="false">Closed</button>
+          </div>
+          <button id="poll-new" class="hub-btn" type="button" hidden>＋ New poll</button>
+        </div>
+        <div id="polls-list" class="social-list"></div>
+        <p id="polls-status" class="hint social-status"></p>
+      </section>
+
+      <section id="view-digest" class="social-view" hidden>
+        <div class="social-toolbar">
+          <p class="hint social-digest-period" id="digest-period"></p>
+          <a id="digest-atom" class="hub-btn social-subscribe" href="../../api/ext/social/v1/digest.atom" hidden>📰 Weekly digest feed</a>
+        </div>
+        <div id="digest-body" class="social-digest"></div>
+        <p id="digest-status" class="hint social-status"></p>
+      </section>
+
       <section id="view-activity" class="social-view" hidden>
         <div id="activity-gate" class="panel social-gate" hidden></div>
         <div id="activity-list" class="social-list"></div>
@@ -95,6 +153,36 @@
         <p id="report-status" class="form-message" role="status" aria-live="polite"></p>
         <div class="hub-dialog-actions">
           <button id="report-submit" class="hub-btn hub-btn-danger" type="submit" value="send">Send report</button>
+          <button class="hub-btn" type="submit" value="cancel" formnovalidate>Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="poll-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="poll-title">
+      <form id="poll-form" method="dialog">
+        <h2 id="poll-title">New poll</h2>
+        <label class="social-label" for="poll-question">Question</label>
+        <input id="poll-question" class="social-input" maxlength="300" required placeholder="When should we meet?" />
+        <label class="social-label" for="poll-description">Details (optional)</label>
+        <textarea id="poll-description" class="social-input" maxlength="1000" rows="2"></textarea>
+        <fieldset class="social-reasons social-poll-options">
+          <legend>Options</legend>
+          <div id="poll-options"></div>
+          <button id="poll-add-option" class="hub-btn" type="button">＋ Add option</button>
+        </fieldset>
+        <label class="social-check"><input id="poll-multi" type="checkbox" /> Members may pick more than one</label>
+        <label class="social-label" for="poll-days">Close after</label>
+        <select id="poll-days" class="social-input">
+          <option value="">Keep open until I close it</option>
+          <option value="1">1 day</option>
+          <option value="3">3 days</option>
+          <option value="7" selected>1 week</option>
+          <option value="14">2 weeks</option>
+          <option value="30">30 days</option>
+        </select>
+        <p id="poll-status" class="form-message" role="status" aria-live="polite"></p>
+        <div class="hub-dialog-actions">
+          <button id="poll-submit" class="hub-btn" type="submit" value="create">Create poll</button>
           <button class="hub-btn" type="submit" value="cancel" formnovalidate>Cancel</button>
         </div>
       </form>

@@ -22,6 +22,10 @@ const state = {
   activityBefore: null,
   lastFeedHash: '#feed',
   reportTarget: null,
+  eventsWhen: 'upcoming',
+  boardKind: '',
+  boardStatus: 'open',
+  pollStatus: 'open',
 };
 
 // ---------------------------------------------------------------------------
@@ -227,7 +231,14 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
   meta.append(time);
   who.append(meta);
   head.append(who);
-  if (item.type !== 'post') head.append(el('span', 'chip social-type', TYPE_LABELS[item.type] || item.type));
+  if (item.listing) {
+    head.append(el('span', `chip social-kind social-kind-${item.listing.kind}`,
+      `${item.listing.kind === 'ask' ? 'Ask' : 'Offer'}${item.listing.status === 'closed' ? ' · closed' : ''}`));
+  } else if (item.event) {
+    head.append(el('span', 'chip social-type', 'Event'));
+  } else if (item.type !== 'post') {
+    head.append(el('span', 'chip social-type', TYPE_LABELS[item.type] || item.type));
+  }
   card.append(head);
 
   if (item.title) card.append(el('h3', 'social-title', item.title));
@@ -236,6 +247,7 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
     p.append(richText(item.commentary));
     card.append(p);
   }
+  if (item.event) card.append(eventDetails(item.event));
   if (item.mediaUrl) {
     const img = el('img', 'social-media');
     img.src = item.mediaUrl;
@@ -299,7 +311,7 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
 // ---------------------------------------------------------------------------
 
 function setView(name) {
-  for (const v of ['feed', 'thread', 'activity']) {
+  for (const v of ['feed', 'thread', 'events', 'board', 'polls', 'digest', 'activity']) {
     $(`view-${v}`).hidden = v !== name;
   }
   for (const tab of document.querySelectorAll('.social-tab')) {
@@ -508,6 +520,406 @@ $('report-form').addEventListener('submit', async (e) => {
 });
 
 // ---------------------------------------------------------------------------
+// Events, asks & offers, polls and the digest (Tier 2)
+// ---------------------------------------------------------------------------
+
+const RSVP_LABELS = { going: 'Going', maybe: 'Maybe', declined: "Can't go" };
+
+function fmtEventWhen(ev) {
+  const start = new Date(ev.startsAt);
+  const end = ev.endsAt ? new Date(ev.endsAt) : null;
+  if (ev.allDay) {
+    const opts = { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' };
+    const s = start.toLocaleDateString(undefined, opts);
+    return end && end.toISOString().slice(0, 10) !== start.toISOString().slice(0, 10)
+      ? `${s} – ${end.toLocaleDateString(undefined, opts)} (all day)`
+      : `${s} (all day)`;
+  }
+  const s = start.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  if (!end) return s;
+  const sameDay = end.toDateString() === start.toDateString();
+  return `${s} – ${sameDay ? end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : end.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function eventDetails(ev) {
+  const box = el('div', 'social-event');
+  const when = el('p', 'social-event-line');
+  when.append(el('span', 'social-event-icon', '📅'), document.createTextNode(fmtEventWhen(ev)));
+  box.append(when);
+  if (ev.location) {
+    const where = el('p', 'social-event-line');
+    where.append(el('span', 'social-event-icon', '📍'), document.createTextNode(ev.location));
+    box.append(where);
+  }
+  const link = safeHttpUrl(ev.url);
+  if (link) {
+    const p = el('p', 'social-event-line');
+    const a = el('a', null, 'Event link');
+    a.href = link;
+    a.rel = 'nofollow ugc noopener noreferrer';
+    a.target = '_blank';
+    p.append(el('span', 'social-event-icon', '🔗'), a);
+    box.append(p);
+  }
+  return box;
+}
+
+function dateBadge(ev) {
+  const d = new Date(ev.startsAt);
+  const opts = ev.allDay ? { timeZone: 'UTC' } : {};
+  const badge = el('div', 'social-datebadge');
+  badge.append(
+    el('span', 'social-datebadge-month', d.toLocaleDateString(undefined, { month: 'short', ...opts })),
+    el('span', 'social-datebadge-day', d.toLocaleDateString(undefined, { day: 'numeric', ...opts }))
+  );
+  return badge;
+}
+
+function rsvpBar(item, past) {
+  const wrap = el('div', 'social-rsvp');
+  const counts = el('p', 'social-rsvp-counts');
+  const going = (item.rsvps && item.rsvps.going) || 0;
+  const maybe = (item.rsvps && item.rsvps.maybe) || 0;
+  counts.textContent = `${going} going${maybe ? ` · ${maybe} maybe` : ''}`;
+  if (item.attendees && item.attendees.length) {
+    counts.append(document.createTextNode(': '), el('span', 'social-attendees', item.attendees.map((a) => a.displayName || a.did).join(', ')));
+  }
+  wrap.append(counts);
+  if (past) return wrap;
+  const buttons = el('div', 'social-reactions');
+  for (const status of ['going', 'maybe', 'declined']) {
+    const btn = el('button', 'hub-btn social-react', RSVP_LABELS[status]);
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', item.myRsvp === status ? 'true' : 'false');
+    btn.addEventListener('click', async () => {
+      if (!(await ensureCanAct())) return;
+      btn.disabled = true;
+      try {
+        const res = await api('rsvps', {
+          method: 'POST',
+          body: { did: item.did, itemId: item.itemId, status: item.myRsvp === status ? null : status },
+        });
+        Object.assign(item, { rsvps: res.rsvps, myRsvp: res.myRsvp, attendees: res.attendees });
+        wrap.replaceWith(rsvpBar(item, past));
+      } catch (err) {
+        showNotice(err.message, 'error');
+        btn.disabled = false;
+      }
+    });
+    buttons.append(btn);
+  }
+  wrap.append(buttons);
+  return wrap;
+}
+
+function eventCard(item, past) {
+  const row = el('div', 'social-event-row');
+  row.append(dateBadge(item.event));
+  const card = itemCard(item);
+  card.querySelector('.social-foot')?.before(rsvpBar(item, past));
+  row.append(card);
+  return row;
+}
+
+async function loadEvents() {
+  const list = $('events-list');
+  const status = $('events-status');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  $('events-ics').hidden = state.config.membersOnly;
+  try {
+    const data = await api('events', { query: { when: state.eventsWhen, limit: 50 } });
+    for (const item of data.events) list.append(eventCard(item, state.eventsWhen === 'past'));
+    status.textContent = data.events.length ? '' : state.eventsWhen === 'past' ? 'No past events yet.' : 'No upcoming events. Add one from Webring Studio.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+function listingCard(item) {
+  const card = itemCard(item);
+  const m = item.matches || { count: 0 };
+  if (m.count || m.matchesMe) {
+    const p = el('p', `social-match${m.matchesMe ? ' is-me' : ''}`);
+    if (m.matchesMe) p.append(el('strong', null, 'Matches your interests. '));
+    const names = m.members && m.members.length ? `: ${m.members.map((x) => x.displayName || x.did).join(', ')}` : '';
+    p.append(document.createTextNode(`${m.count} member${m.count === 1 ? '' : 's'} list${m.count === 1 ? 's' : ''} these interests${names}`));
+    card.querySelector('.social-foot')?.before(p);
+  }
+  return card;
+}
+
+async function loadBoard() {
+  const list = $('board-list');
+  const status = $('board-status');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  try {
+    const data = await api('listings', { query: { kind: state.boardKind, status: state.boardStatus, limit: 50 } });
+    for (const item of data.listings) list.append(listingCard(item));
+    status.textContent = data.listings.length ? '' : 'Nothing here yet.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+function pollCard(poll) {
+  const card = el('article', 'entry social-card social-poll');
+  const head = el('div', 'social-poll-head');
+  head.append(el('h3', 'social-title', poll.question));
+  const meta = el('p', 'hint social-poll-meta');
+  const bits = [`by ${poll.createdBy.displayName}`];
+  if (poll.closed) bits.push('closed');
+  else if (poll.closesAt) bits.push(`closes ${new Date(poll.closesAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`);
+  if (poll.multi) bits.push('pick any');
+  if (poll.voters !== null) bits.push(`${poll.voters} voter${poll.voters === 1 ? '' : 's'}`);
+  meta.textContent = bits.join(' · ');
+  head.append(meta);
+  card.append(head);
+  if (poll.description) card.append(el('p', 'social-text', poll.description));
+
+  const form = el('form', 'social-poll-form');
+  const total = Math.max(1, ...poll.options.map((o) => o.votes || 0));
+  const voterCount = Math.max(1, poll.voters || 0);
+  for (const opt of poll.options) {
+    const row = el('label', 'social-poll-option');
+    if (!poll.closed) {
+      const input = el('input');
+      input.type = poll.multi ? 'checkbox' : 'radio';
+      input.name = `poll-${poll.id}`;
+      input.value = String(opt.id);
+      input.checked = poll.myVotes.includes(opt.id);
+      row.append(input);
+    }
+    row.append(el('span', 'social-poll-label', opt.label));
+    if (poll.resultsVisible) {
+      const pct = Math.round(((opt.votes || 0) / voterCount) * 100);
+      const bar = el('span', 'social-poll-bar');
+      const fill = el('span', `social-poll-fill${poll.myVotes.includes(opt.id) ? ' is-mine' : ''}${(opt.votes || 0) === total && opt.votes ? ' is-top' : ''}`);
+      fill.style.width = `${pct}%`;
+      bar.append(fill);
+      row.append(bar, el('span', 'social-poll-count', `${opt.votes} · ${pct}%`));
+    }
+    form.append(row);
+  }
+  const actions = el('div', 'social-actions');
+  if (!poll.closed) {
+    const vote = el('button', 'hub-btn', poll.myVotes.length ? 'Change vote' : 'Vote');
+    vote.type = 'submit';
+    actions.append(vote);
+    if (!poll.resultsVisible) actions.append(el('span', 'hint', 'Results appear after you vote.'));
+  }
+  if (poll.canClose) {
+    const close = el('button', 'hub-btn', 'Close poll');
+    close.type = 'button';
+    close.addEventListener('click', async () => {
+      if (!window.confirm('Close this poll? Nobody can vote after that, and results become visible to everyone.')) return;
+      try {
+        const res = await api(`polls/${poll.id}/close`, { method: 'POST' });
+        card.replaceWith(pollCard(res.poll));
+      } catch (err) {
+        showNotice(err.message, 'error');
+      }
+    });
+    actions.append(close);
+  }
+  form.append(actions);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!(await ensureCanAct())) return;
+    const optionIds = [...form.querySelectorAll('input:checked')].map((i) => Number(i.value));
+    if (optionIds.length === 0) {
+      showNotice('Pick an option first.', 'error');
+      return;
+    }
+    try {
+      const res = await api(`polls/${poll.id}/vote`, { method: 'POST', body: { optionIds } });
+      card.replaceWith(pollCard(res.poll));
+    } catch (err) {
+      showNotice(err.message, 'error');
+    }
+  });
+  card.append(form);
+  return card;
+}
+
+async function loadPolls() {
+  const list = $('polls-list');
+  const status = $('polls-status');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  try {
+    const data = await api('polls', { query: { status: state.pollStatus } });
+    $('poll-new').hidden = !data.membersCreatePolls;
+    for (const poll of data.polls) list.append(pollCard(poll));
+    status.textContent = data.polls.length ? '' : state.pollStatus === 'open' ? 'No open polls.' : 'No closed polls yet.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+function addPollOption(value = '') {
+  const box = $('poll-options');
+  if (box.childElementCount >= 8) return;
+  const input = el('input', 'social-input social-poll-input');
+  input.maxLength = 120;
+  input.placeholder = `Option ${box.childElementCount + 1}`;
+  input.value = value;
+  box.append(input);
+  $('poll-add-option').hidden = box.childElementCount >= 8;
+}
+
+async function openPollDialog() {
+  if (!(await ensureCanAct())) return;
+  $('poll-form').reset();
+  $('poll-options').replaceChildren();
+  addPollOption();
+  addPollOption();
+  $('poll-status').textContent = '';
+  $('poll-submit').disabled = false;
+  $('poll-dialog').showModal();
+}
+
+function digestSection(title, nodes, empty) {
+  const sec = el('section', 'panel social-digest-section');
+  sec.append(el('h2', null, title));
+  if (!nodes.length) {
+    sec.append(el('p', 'hint', empty));
+  } else {
+    const ul = el('ul', 'social-digest-list');
+    for (const n of nodes) {
+      const li = el('li');
+      li.append(n);
+      ul.append(li);
+    }
+    sec.append(ul);
+  }
+  return sec;
+}
+
+function threadLink(item, text) {
+  const a = el('a', null, text);
+  a.href = threadHash(item.did, item.itemId);
+  return a;
+}
+
+function itemLabel(item) {
+  const t = item.title || item.commentary || '(no text)';
+  return t.length > 90 ? `${t.slice(0, 89)}…` : t;
+}
+
+async function loadDigest() {
+  const body = $('digest-body');
+  const status = $('digest-status');
+  body.replaceChildren();
+  status.textContent = 'Loading…';
+  $('digest-atom').hidden = state.config.membersOnly;
+  try {
+    const d = await api('digest', { query: { days: 7 } });
+    $('digest-period').textContent = `${new Date(d.period.from).toLocaleDateString()} – ${new Date(d.period.to).toLocaleDateString()}: ${d.stats.posts} posts, ${d.stats.comments} comments, ${d.stats.reactions} reactions`;
+    body.append(
+      digestSection('Busiest conversations', d.topConversations.map((it) => {
+        const f = document.createDocumentFragment();
+        f.append(el('strong', null, authorName(it.author)), document.createTextNode(': '), threadLink(it, itemLabel(it)),
+          el('span', 'hint', ` · ${it.replyCount} ${it.replyCount === 1 ? 'reply' : 'replies'}`));
+        return f;
+      }), 'A quiet week.'),
+      digestSection('Coming up', d.upcomingEvents.map((it) => {
+        const f = document.createDocumentFragment();
+        f.append(threadLink(it, itemLabel(it)), el('span', 'hint', ` · ${fmtEventWhen(it.event)}${it.rsvps.going ? ` · ${it.rsvps.going} going` : ''}`));
+        return f;
+      }), 'No events in the next two weeks.'),
+      digestSection('New members', d.newMembers.map((m) => {
+        const href = safeHttpUrl(m.siteUrl);
+        const a = el('a', null, m.displayName || m.did);
+        if (href) {
+          a.href = href;
+          a.rel = 'noopener noreferrer';
+          a.target = '_blank';
+        }
+        return a;
+      }), 'No new members this week.'),
+      digestSection('Open polls', d.openPolls.map((p) => {
+        const a = el('a', null, p.question);
+        a.href = '#polls';
+        return a;
+      }), 'No open polls.'),
+      digestSection('Asks & offers', d.newListings.map((it) => {
+        const f = document.createDocumentFragment();
+        f.append(el('span', `chip social-kind social-kind-${it.listing.kind}`, it.listing.kind === 'ask' ? 'Ask' : 'Offer'), document.createTextNode(' '), threadLink(it, itemLabel(it)));
+        return f;
+      }), 'No new asks or offers.')
+    );
+    status.textContent = '';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+$('poll-new').addEventListener('click', openPollDialog);
+$('poll-add-option').addEventListener('click', () => addPollOption());
+$('poll-form').addEventListener('submit', async (e) => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  e.preventDefault();
+  const options = [...$('poll-options').querySelectorAll('input')].map((i) => i.value.trim()).filter(Boolean);
+  $('poll-submit').disabled = true;
+  try {
+    await api('polls', {
+      method: 'POST',
+      body: {
+        question: $('poll-question').value,
+        description: $('poll-description').value,
+        options,
+        multi: $('poll-multi').checked,
+        closesInDays: $('poll-days').value || null,
+      },
+    });
+    $('poll-dialog').close();
+    state.pollStatus = 'open';
+    setPressed('[data-poll-status]', (b) => b.dataset.pollStatus === 'open');
+    loadPolls();
+  } catch (err) {
+    const s = $('poll-status');
+    s.textContent = err.message;
+    s.className = 'form-message error';
+    $('poll-submit').disabled = false;
+  }
+});
+
+function setPressed(selector, isOn) {
+  for (const b of document.querySelectorAll(selector)) b.setAttribute('aria-pressed', isOn(b) ? 'true' : 'false');
+}
+
+for (const btn of document.querySelectorAll('[data-when]')) {
+  btn.addEventListener('click', () => {
+    state.eventsWhen = btn.dataset.when;
+    setPressed('[data-when]', (b) => b === btn);
+    loadEvents();
+  });
+}
+for (const btn of document.querySelectorAll('[data-kind]')) {
+  btn.addEventListener('click', () => {
+    state.boardKind = btn.dataset.kind;
+    setPressed('[data-kind]', (b) => b === btn);
+    loadBoard();
+  });
+}
+for (const btn of document.querySelectorAll('[data-status]')) {
+  btn.addEventListener('click', () => {
+    state.boardStatus = btn.dataset.status;
+    setPressed('[data-status]', (b) => b === btn);
+    loadBoard();
+  });
+}
+for (const btn of document.querySelectorAll('[data-poll-status]')) {
+  btn.addEventListener('click', () => {
+    state.pollStatus = btn.dataset.pollStatus;
+    setPressed('[data-poll-status]', (b) => b === btn);
+    loadPolls();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Routing & wiring
 // ---------------------------------------------------------------------------
 
@@ -520,6 +932,18 @@ function route() {
   } else if (hash === '#activity') {
     setView('activity');
     loadActivity(true);
+  } else if (hash === '#events') {
+    setView('events');
+    loadEvents();
+  } else if (hash === '#board') {
+    setView('board');
+    loadBoard();
+  } else if (hash === '#polls') {
+    setView('polls');
+    loadPolls();
+  } else if (hash === '#digest') {
+    setView('digest');
+    loadDigest();
   } else {
     state.lastFeedHash = '#feed';
     setView('feed');

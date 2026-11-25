@@ -344,3 +344,304 @@
     align-items: flex-start;
   }
 }
+
+/* ---- Tier 2: events, asks & offers, polls, digest ---- */
+
+.social-tabs {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.social-tab {
+  white-space: nowrap;
+}
+
+.social-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.social-subscribe {
+  text-decoration: none;
+}
+
+.social-event {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.social-event-line {
+  margin: 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.social-event-line a {
+  color: var(--accent-light);
+}
+
+.social-event-icon {
+  flex: none;
+  width: 1.2em;
+}
+
+.social-event-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.social-event-row > .social-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.social-datebadge {
+  flex: none;
+  width: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.social-datebadge-month {
+  color: var(--accent-cyan);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.social-datebadge-day {
+  color: var(--text-bright);
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.social-rsvp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.social-rsvp-counts {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.social-attendees {
+  color: var(--text);
+}
+
+.social-kind-ask {
+  background: rgba(244, 114, 182, 0.14);
+  border-color: rgba(244, 114, 182, 0.35);
+  color: #f9a8d4;
+}
+
+.social-kind-offer {
+  background: var(--ok-soft);
+  border-color: var(--ok-border);
+  color: var(--ok);
+}
+
+html[data-theme="light"] .social-kind-ask {
+  color: #be185d;
+}
+
+.social-match {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.social-match.is-me {
+  border: 1px solid var(--ok-border);
+  background: var(--ok-soft);
+  color: var(--text);
+}
+
+.social-poll-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.social-poll-meta {
+  margin: 0;
+}
+
+.social-poll-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.social-poll-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "input label count" "bar bar bar";
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.social-poll-option input {
+  grid-area: input;
+}
+
+.social-poll-label {
+  grid-area: label;
+  overflow-wrap: anywhere;
+}
+
+.social-poll-count {
+  grid-area: count;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.social-poll-bar {
+  grid-area: bar;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.social-poll-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+.social-poll-fill.is-top {
+  background: var(--accent);
+}
+
+.social-poll-fill.is-mine {
+  background: var(--accent-cyan);
+}
+
+.social-poll-form .social-actions {
+  align-items: center;
+}
+
+.social-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.social-poll-options {
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+
+.social-poll-input {
+  margin-bottom: 6px;
+}
+
+.social-check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 10px;
+  color: var(--text);
+}
+
+.social-digest {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.social-digest-period {
+  margin: 0;
+}
+
+.social-digest-section h2 {
+  margin-top: 0;
+}
+
+.social-digest-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.social-digest-list a {
+  color: var(--accent-light);
+}
+
+@media (max-width: 560px) {
+  .social-event-row {
+    flex-direction: column;
+  }
+
+  .social-datebadge {
+    flex-direction: row;
+    gap: 6px;
+    width: auto;
+    padding: 4px 10px;
+  }
+
+  .social-datebadge-day {
+    font-size: 1rem;
+  }
+}
+
+.social-tabs {
+  overflow-y: hidden;
+}
+
+/* The hub hides the header buttons on narrow screens; this page needs sign-in there too. */
+@media (max-width: 860px) {
+  .social-page .header-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .social-page .hub-auth-bar,
+  .social-page .hub-user-bar:not([hidden]) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}

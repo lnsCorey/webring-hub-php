@@ -143,7 +143,8 @@ $ctx = $extensions->context('webhook-sync');
 
 echo "loader & manifest\n";
 check($extensions->isLoaded('webhook-sync') && $ctx !== null, 'webhook-sync extension loads cleanly');
-check($ctx !== null && $ctx->schemaVersion() === 2, 'webhook-sync migrated to schema 2');
+check($ctx !== null && $ctx->schemaVersion() === 3, 'webhook-sync migrated to schema 3');
+check(\WebringHub\Ext\WebhookSync\WebhookSyncExtension::normalizeTargetUrl('https://a.example/api/items.json#x', 'https://a.example/api/items.json#x') === null, 'a targetUrl equal to its own canonicalUrl is not stored as a reply target');
 $itemEvents = [];
 if ($ctx !== null) {
     $ctx->on('ext.webhook-sync.items_changed', static function (array $e) use (&$itemEvents): void {

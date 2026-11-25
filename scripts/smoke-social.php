@@ -82,8 +82,8 @@ check(!$ext->isLoaded('social') && str_contains((string) $err, 'webhook-sync'), 
 [$pdo, $ext] = $load(['social', 'webhook-sync'], ['autoHideReports' => 3]);
 check($ext->isLoaded('webhook-sync') && $ext->isLoaded('social'), 'social loads after webhook-sync even when listed first');
 $social = array_values(array_filter($ext->adminList(), static fn ($e) => $e['id'] === 'social'))[0] ?? [];
-check(($social['kind'] ?? '') === 'both' && count($social['panels'] ?? []) === 3 && ($social['uiError'] ?? null) === null, 'social declares a public card and 3 valid admin panels');
-check(($ext->context('webhook-sync')?->schemaVersion() ?? 0) === 2, 'webhook-sync is at schema 2');
+check(($social['kind'] ?? '') === 'both' && count($social['panels'] ?? []) === 5 && ($social['uiError'] ?? null) === null, 'social declares a public card and 5 valid admin panels');
+check(($ext->context('webhook-sync')?->schemaVersion() ?? 0) === 3, 'webhook-sync is at schema 3');
 
 // ---------------------------------------------------------------------------
 // Seed members and items (as webhook-sync would after verifying them)
@@ -107,7 +107,8 @@ $items = [
     ['alice', 'a2', 'comment', '2026-11-20T13:00:00.000Z', ['commentary' => 'Thanks both', 'targetUrl' => $url('carol', 'c1')]],
     // Mallory claims Alice's canonical URL: it must not capture replies to a1.
     ['mallory', 'm1', 'post', '2026-11-20T09:00:00.000Z', ['commentary' => 'forged', 'canonicalUrl' => $url('alice', 'a1')]],
-    ['eve', 'e1', 'post', '2026-11-19T09:00:00.000Z', ['commentary' => 'Eve here']],
+    // Studio publishes posts with targetUrl = their own canonicalUrl; stored as-is here (pre-migration rows).
+    ['eve', 'e1', 'post', '2026-11-19T09:00:00.000Z', ['commentary' => 'Eve here', 'targetUrl' => $url('eve', 'e1')]],
 ];
 $insItem = $pdo->prepare(
     'INSERT INTO ext_webhook_sync_items (did, item_id, canonical_url, content_type, published_at, updated_at, raw_item_json, target_url) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)'
@@ -150,6 +151,8 @@ $b1 = $root['children'][0] ?? [];
 check($s === 200 && ($root['itemId'] ?? '') === 'a1' && ($thread['focus']['itemId'] ?? '') === 'a2', 'a thread opened from a deep reply climbs to its root');
 check(count($root['children'] ?? []) === 2 && ($b1['itemId'] ?? '') === 'b1' && ($b1['children'][0]['children'][0]['itemId'] ?? '') === 'a2', 'thread nests replies in order (a1 → b1 → c1 → a2, plus the like)');
 check(($thread['nodeCount'] ?? 0) === 5 && $thread['truncated'] === false, 'thread counts its nodes');
+[$s, $selfThread] = call($ext, 'GET', '/api/ext/social/v1/thread', ['did' => $did('eve'), 'id' => 'e1']);
+check($s === 200 && ($selfThread['root']['itemId'] ?? '') === 'e1' && ($selfThread['root']['children'] ?? null) === [], 'a post whose targetUrl is its own URL is its own root, not a reply to itself');
 [$s] = call($ext, 'GET', '/api/ext/social/v1/thread', ['did' => $did('alice'), 'id' => 'nope']);
 check($s === 404, 'unknown thread item is 404');
 
@@ -333,6 +336,9 @@ try {
     check($page['status'] === 200 && str_contains($page['body'], '/hub-auth.js') && str_contains($page['headers']['content-security-policy'] ?? '', "script-src 'self'"), '/ext/social/ serves the page with a strict CSP');
     check(http('GET', "{$base}/ext/social/app.js")['status'] === 200 && http('GET', "{$base}/ext/social/card.svg")['status'] === 200, 'page script and card art are served');
     check(http('GET', "{$base}/api/ext/social/v1/feed")['status'] === 200, 'feed is public by default');
+    $ics = http('GET', "{$base}/api/ext/social/v1/events.ics");
+    check($ics['status'] === 200 && str_starts_with($ics['headers']['content-type'] ?? '', 'text/calendar') && str_starts_with($ics['body'], 'BEGIN:VCALENDAR')
+        && str_contains($ics['headers']['content-security-policy'] ?? '', "default-src 'none'"), 'raw extension responses (events.ics) are served as text/calendar with a locked-down CSP');
 
     $cookie = ['Cookie' => "webring_hub_session={$rawToken}", 'Content-Type' => 'application/json'];
     $reactBody = (string) json_encode(['did' => 'did:web:mallory.example', 'itemId' => 'm1', 'reaction' => 'like', 'on' => true]);

@@ -92,6 +92,30 @@ function sendExtensionFile(array $resolved, bool $headOnly = false): never
 }
 
 /**
+ * Sends a non-JSON extension response (calendar, feed). The content type comes from the
+ * ExtensionRawResponse allowlist; responses are never cached by shared caches.
+ */
+function sendExtensionRaw(ExtensionRawResponse $res, bool $headOnly = false): never
+{
+    http_response_code($res->status);
+    setCommonHeaders();
+    header('Content-Type: ' . $res->contentType);
+    header('Content-Length: ' . strlen($res->body));
+    header('Cache-Control: private, max-age=300');
+    header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
+    foreach ($res->headers as $k => $v) {
+        if (preg_match('/^[A-Za-z0-9-]{1,64}$/', (string) $k) && !preg_match('/[\r\n]/', (string) $v)
+            && !in_array(strtolower((string) $k), ['content-type', 'content-length', 'set-cookie', 'content-security-policy'], true)) {
+            header("{$k}: {$v}");
+        }
+    }
+    if (!$headOnly) {
+        echo $res->body;
+    }
+    exit;
+}
+
+/**
  * @param array<string, mixed> $body
  * @param array<string, string> $extraHeaders
  */
@@ -453,6 +477,9 @@ try {
             $userOptedIn
         );
         $res = Extensions::run($match, $request);
+        if (isset($res[3]) && $res[3] instanceof ExtensionRawResponse) {
+            sendExtensionRaw($res[3], $method === 'HEAD');
+        }
         sendJson($res[0], $res[1], $res[2] ?? [], $method === 'HEAD');
     };
 
