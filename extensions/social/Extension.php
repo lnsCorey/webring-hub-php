@@ -9,6 +9,8 @@ use WebringHub\Extension;
 use WebringHub\ExtensionContext;
 use WebringHub\ExtensionRequest;
 
+require_once __DIR__ . '/Groups.php';
+
 /**
  * Conversations & Reactions (`social`): group engagement between verified hub members.
  *
@@ -25,6 +27,13 @@ use WebringHub\ExtensionRequest;
  */
 final class SocialExtension implements Extension
 {
+    use Groups;
+
+    public const RSVP_STATUSES = ['going', 'maybe', 'declined'];
+    public const MAX_POLL_OPTIONS = 8;
+    public const POLLS_PER_DAY = 5;
+    public const RSVPS_PER_HOUR = 60;
+    public const VOTES_PER_HOUR = 60;
     public const DEFAULT_REACTIONS = ['like', 'heart', 'celebrate', 'think'];
     public const REPORT_REASONS = ['spam', 'abuse', 'off-topic', 'other'];
     public const MAX_THREAD_DEPTH = 6;
@@ -61,6 +70,7 @@ final class SocialExtension implements Extension
             $this->createTables($pdo, $driver);
             $this->reindexMentions(null);
         });
+        $this->registerGroups($ctx);
 
         $ctx->serveFiles('', 'public', [
             'csp' => "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -709,10 +719,10 @@ final class SocialExtension implements Extension
         $upserted = array_values(array_filter(is_array($e['upserted'] ?? null) ? $e['upserted'] : [], 'is_string'));
         foreach (array_chunk($upserted, 200) as $chunk) {
             $ph = implode(',', array_fill(0, count($chunk), '?'));
-            $stmt = $this->ctx->pdo()->prepare("SELECT did, item_id, published_at, raw_item_json FROM {$this->tItems} WHERE did = ? AND item_id IN ({$ph})");
+            $stmt = $this->ctx->pdo()->prepare("SELECT did, item_id, content_type, published_at, raw_item_json FROM {$this->tItems} WHERE did = ? AND item_id IN ({$ph})");
             $stmt->execute(array_merge([$did], $chunk));
             foreach ($stmt->fetchAll() as $row) {
-                $this->indexMentions($row);
+                $this->indexItem($row);
             }
         }
     }
@@ -726,17 +736,28 @@ final class SocialExtension implements Extension
         $pdo = $this->ctx->pdo();
         $offset = 0;
         do {
-            $sql = "SELECT did, item_id, published_at, raw_item_json FROM {$this->tItems}"
+            $sql = "SELECT did, item_id, content_type, published_at, raw_item_json FROM {$this->tItems}"
                 . ($sinceIso !== null ? ' WHERE published_at >= ?' : '')
                 . ' ORDER BY did, item_id LIMIT 500 OFFSET ' . $offset;
             $stmt = $pdo->prepare($sql);
             $stmt->execute($sinceIso !== null ? [$sinceIso] : []);
             $rows = $stmt->fetchAll();
             foreach ($rows as $row) {
-                $this->indexMentions($row);
+                $this->indexItem($row);
             }
             $offset += 500;
         } while (count($rows) === 500);
+    }
+
+    /**
+     * Indexes one webhook-sync item: its mentions, and whether it is an event or an ask/offer.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function indexItem(array $row): void
+    {
+        $this->indexMentions($row);
+        $this->indexGroupItem($row);
     }
 
     /**
@@ -841,7 +862,7 @@ final class SocialExtension implements Extension
     private function deleteItemRows(string $did, ?array $itemIds): void
     {
         $pdo = $this->ctx->pdo();
-        $tables = [$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden];
+        $tables = array_merge([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden], $this->groupItemTables());
         if ($itemIds === null) {
             foreach ($tables as $t) {
                 $pdo->prepare("DELETE FROM {$t} WHERE item_did = ?")->execute([$did]);
@@ -880,13 +901,14 @@ final class SocialExtension implements Extension
         $pdo->prepare("DELETE FROM {$this->tReports} WHERE reporter_did = ?")->execute([$did]);
         $pdo->prepare("DELETE FROM {$this->tSeen} WHERE did = ?")->execute([$did]);
         $pdo->prepare("DELETE FROM {$this->tLimits} WHERE did = ?")->execute([$did]);
+        $this->purgeGroupUserData($did);
     }
 
     /** Rows whose item left the hub while this extension wasn't listening. */
     private function pruneOrphans(): void
     {
         $pdo = $this->ctx->pdo();
-        foreach ([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden] as $t) {
+        foreach (array_merge([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden], $this->groupItemTables()) as $t) {
             $pdo->exec(
                 "DELETE FROM {$t} WHERE NOT EXISTS (
                    SELECT 1 FROM {$this->tItems} i WHERE i.did = {$t}.item_did AND i.item_id = {$t}.item_id
@@ -1010,6 +1032,8 @@ final class SocialExtension implements Extension
             'tags' => $tags,
             'rating' => is_int($rating) && $rating >= 1 && $rating <= 5 ? $rating : null,
             'targetAuthorName' => $str('targetAuthorName', 200),
+            'event' => self::parseEvent($raw, (string) $row['content_type']),
+            'listing' => self::parseListing($raw, (string) $row['content_type']),
             'author' => [
                 'did' => (string) $row['did'],
                 'siteUrl' => (string) ($row['site_url'] ?? ''),

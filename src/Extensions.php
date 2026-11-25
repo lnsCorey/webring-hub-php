@@ -19,6 +19,37 @@ interface Extension
 }
 
 /**
+ * A non-JSON response from an extension route (a calendar or a feed). Only a short allowlist of
+ * text types is accepted, so an extension can't serve HTML or scripts from an API route.
+ */
+final class ExtensionRawResponse
+{
+    public const CONTENT_TYPES = [
+        'text/calendar' => 'text/calendar; charset=utf-8',
+        'application/atom+xml' => 'application/atom+xml; charset=utf-8',
+        'text/plain' => 'text/plain; charset=utf-8',
+        'text/csv' => 'text/csv; charset=utf-8',
+    ];
+
+    public readonly string $contentType;
+
+    /**
+     * @param array<string, string> $headers extra headers such as Content-Disposition
+     */
+    public function __construct(
+        public readonly int $status,
+        public readonly string $body,
+        string $contentType,
+        public readonly array $headers = []
+    ) {
+        if (!isset(self::CONTENT_TYPES[$contentType])) {
+            throw new \InvalidArgumentException("Extensions may not send {$contentType}.");
+        }
+        $this->contentType = self::CONTENT_TYPES[$contentType];
+    }
+}
+
+/**
  * Thrown while loading when an extension's `reads` dependency has not loaded yet; the loader
  * retries it after the others.
  */
@@ -257,6 +288,15 @@ final class ExtensionContext
             throw new \InvalidArgumentException('Table suffixes must be lowercase letters, digits and _.');
         }
         return 'ext_' . str_replace('-', '_', $this->id) . '_' . $suffix;
+    }
+
+    /**
+     * This hub's canonical URL (from `hub_url` in config.php), without a trailing slash, or ''.
+     */
+    public function hubUrl(): string
+    {
+        $inst = is_array($this->config['instance'] ?? null) ? $this->config['instance'] : [];
+        return rtrim((string) ($inst['directoryUrl'] ?? ''), '/');
     }
 
     public function isoNow(): string
@@ -834,11 +874,16 @@ final class Extensions
      * (or `[status, body, headers]` when explicit response headers are supplied).
      *
      * @param array{route: array<string, mixed>, params: array<string, string>} $match
-     * @return array{0: int, 1: array<string, mixed>, 2?: array<string, string>}
+     * A handler may also return an ExtensionRawResponse, passed back as the fourth element.
+     *
+     * @return array{0: int, 1: array<string, mixed>, 2?: array<string, string>, 3?: ExtensionRawResponse}
      */
     public static function run(array $match, ExtensionRequest $req): array
     {
         $result = ($match['route']['handler'])($match['params'], $req);
+        if ($result instanceof ExtensionRawResponse) {
+            return [$result->status, [], [], $result];
+        }
         if (is_array($result) && array_is_list($result)) {
             if (count($result) === 2 && is_int($result[0]) && is_array($result[1])) {
                 return [$result[0], $result[1]];

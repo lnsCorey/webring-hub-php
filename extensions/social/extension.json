@@ -1,13 +1,15 @@
 {
   "id": "social",
   "name": "Conversations & Reactions",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": 1,
   "class": "WebringHub\\Ext\\Social\\SocialExtension",
-  "description": "Threads built from members' signed comments, one-tap reactions, member reports with admin moderation, and an activity view of replies, mentions and reactions.",
+  "description": "Threads built from members' signed comments, reactions, moderation and activity, plus events with RSVPs, polls, an asks & offers board and a weekly digest.",
   "author": "Webring Suite",
   "homepage": "",
-  "reads": ["webhook-sync"],
+  "reads": [
+    "webhook-sync"
+  ],
   "routes": [
     "GET v1/config",
     "GET v1/feed",
@@ -21,7 +23,21 @@
     "GET v1/admin/hidden",
     "POST v1/admin/reports/{id}/hide",
     "POST v1/admin/reports/{id}/dismiss",
-    "POST v1/admin/hidden/{id}/restore"
+    "POST v1/admin/hidden/{id}/restore",
+    "GET v1/events",
+    "GET v1/events.ics",
+    "POST v1/rsvps",
+    "GET v1/listings",
+    "GET v1/polls",
+    "POST v1/polls",
+    "POST v1/polls/{id}/vote",
+    "POST v1/polls/{id}/close",
+    "GET v1/digest",
+    "GET v1/digest.atom",
+    "GET v1/admin/polls",
+    "POST v1/admin/polls",
+    "POST v1/admin/polls/{id}/close",
+    "DELETE v1/admin/polls/{id}"
   ],
   "events": [
     "entry.removed",
@@ -30,16 +46,31 @@
     "cron.refresh",
     "ext.webhook-sync.items_changed"
   ],
-  "tables": ["reactions", "mentions", "reports", "hidden", "seen", "limits"],
-  "public": ["/ext/social/"],
+  "tables": [
+    "reactions",
+    "mentions",
+    "reports",
+    "hidden",
+    "seen",
+    "limits",
+    "events",
+    "rsvps",
+    "listings",
+    "polls",
+    "poll_options",
+    "poll_votes"
+  ],
+  "public": [
+    "/ext/social/"
+  ],
   "userData": {
     "optInRequired": true,
-    "summary": "Stores your reactions, the reports you send and when you last read your activity, under your DID. Your posts and comments stay on your own site."
+    "summary": "Stores your reactions, RSVPs, poll votes, the polls and reports you create, and when you last read your activity, under your DID. Your posts, events and asks/offers stay on your own site."
   },
   "ui": {
     "public": {
       "title": "Conversations",
-      "tagline": "Talk with other members: threads, reactions and mentions",
+      "tagline": "Threads, events, polls and asks & offers between members",
       "href": "/ext/social/",
       "cta": "Join the conversation",
       "art": "card.svg",
@@ -53,10 +84,22 @@
           "type": "stats",
           "source": "v1/admin/summary",
           "items": [
-            { "key": "openReports", "label": "Items with open reports" },
-            { "key": "hiddenItems", "label": "Hidden items" },
-            { "key": "reactions7d", "label": "Reactions (7 days)" },
-            { "key": "activeThreads7d", "label": "Active threads (7 days)" }
+            {
+              "key": "openReports",
+              "label": "Items with open reports"
+            },
+            {
+              "key": "hiddenItems",
+              "label": "Hidden items"
+            },
+            {
+              "key": "reactions7d",
+              "label": "Reactions (7 days)"
+            },
+            {
+              "key": "activeThreads7d",
+              "label": "Active threads (7 days)"
+            }
           ]
         },
         {
@@ -68,12 +111,32 @@
           "itemsKey": "reports",
           "emptyMessage": "No open reports.",
           "columns": [
-            { "key": "author", "label": "Author" },
-            { "key": "excerpt", "label": "Item" },
-            { "key": "reasons", "label": "Reasons" },
-            { "key": "reportCount", "label": "Reports" },
-            { "key": "visibility", "label": "Now", "as": "badge" },
-            { "key": "firstReported", "label": "First reported", "as": "time" }
+            {
+              "key": "author",
+              "label": "Author"
+            },
+            {
+              "key": "excerpt",
+              "label": "Item"
+            },
+            {
+              "key": "reasons",
+              "label": "Reasons"
+            },
+            {
+              "key": "reportCount",
+              "label": "Reports"
+            },
+            {
+              "key": "visibility",
+              "label": "Now",
+              "as": "badge"
+            },
+            {
+              "key": "firstReported",
+              "label": "First reported",
+              "as": "time"
+            }
           ],
           "actions": [
             {
@@ -99,10 +162,24 @@
           "itemsKey": "hidden",
           "emptyMessage": "Nothing is hidden.",
           "columns": [
-            { "key": "author", "label": "Author" },
-            { "key": "excerpt", "label": "Item" },
-            { "key": "reason", "label": "Hidden by", "as": "badge" },
-            { "key": "hiddenAt", "label": "Hidden", "as": "time" }
+            {
+              "key": "author",
+              "label": "Author"
+            },
+            {
+              "key": "excerpt",
+              "label": "Item"
+            },
+            {
+              "key": "reason",
+              "label": "Hidden by",
+              "as": "badge"
+            },
+            {
+              "key": "hiddenAt",
+              "label": "Hidden",
+              "as": "time"
+            }
           ],
           "actions": [
             {
@@ -110,6 +187,85 @@
               "method": "POST",
               "path": "v1/admin/hidden/{id}/restore",
               "confirm": "Show this item on the hub again?"
+            }
+          ]
+        },
+        {
+          "id": "social-polls",
+          "title": "Polls",
+          "type": "table",
+          "source": "v1/admin/polls",
+          "itemsKey": "polls",
+          "emptyMessage": "No polls yet.",
+          "columns": [
+            {
+              "key": "question",
+              "label": "Question"
+            },
+            {
+              "key": "createdBy",
+              "label": "Created by"
+            },
+            {
+              "key": "status",
+              "label": "Status",
+              "as": "badge"
+            },
+            {
+              "key": "voters",
+              "label": "Voters"
+            },
+            {
+              "key": "closesAt",
+              "label": "Closes",
+              "as": "time"
+            }
+          ],
+          "actions": [
+            {
+              "label": "Close",
+              "method": "POST",
+              "path": "v1/admin/polls/{id}/close",
+              "when": {
+                "key": "status",
+                "equals": "open"
+              },
+              "confirm": "Close this poll now? Results become visible to everyone."
+            },
+            {
+              "label": "Delete",
+              "method": "DELETE",
+              "path": "v1/admin/polls/{id}",
+              "style": "danger",
+              "confirm": "Delete this poll and all its votes?"
+            }
+          ]
+        },
+        {
+          "id": "social-new-poll",
+          "title": "New poll",
+          "description": "Ask the whole community. Separate options with |, for example: Saturday | Sunday | Either.",
+          "type": "form",
+          "method": "POST",
+          "path": "v1/admin/polls",
+          "submitLabel": "Create poll",
+          "fields": [
+            {
+              "name": "question",
+              "label": "Question",
+              "placeholder": "When should we meet?",
+              "required": true
+            },
+            {
+              "name": "options",
+              "label": "Options (separate with |)",
+              "placeholder": "Saturday | Sunday | Either",
+              "required": true
+            },
+            {
+              "name": "closesInDays",
+              "label": "Close after (days, optional)",
+              "placeholder": "7"
             }
           ]
         }

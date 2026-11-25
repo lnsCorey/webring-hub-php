@@ -82,7 +82,7 @@ check(!$ext->isLoaded('social') && str_contains((string) $err, 'webhook-sync'), 
 [$pdo, $ext] = $load(['social', 'webhook-sync'], ['autoHideReports' => 3]);
 check($ext->isLoaded('webhook-sync') && $ext->isLoaded('social'), 'social loads after webhook-sync even when listed first');
 $social = array_values(array_filter($ext->adminList(), static fn ($e) => $e['id'] === 'social'))[0] ?? [];
-check(($social['kind'] ?? '') === 'both' && count($social['panels'] ?? []) === 3 && ($social['uiError'] ?? null) === null, 'social declares a public card and 3 valid admin panels');
+check(($social['kind'] ?? '') === 'both' && count($social['panels'] ?? []) === 5 && ($social['uiError'] ?? null) === null, 'social declares a public card and 5 valid admin panels');
 check(($ext->context('webhook-sync')?->schemaVersion() ?? 0) === 2, 'webhook-sync is at schema 2');
 
 // ---------------------------------------------------------------------------
@@ -333,6 +333,9 @@ try {
     check($page['status'] === 200 && str_contains($page['body'], '/hub-auth.js') && str_contains($page['headers']['content-security-policy'] ?? '', "script-src 'self'"), '/ext/social/ serves the page with a strict CSP');
     check(http('GET', "{$base}/ext/social/app.js")['status'] === 200 && http('GET', "{$base}/ext/social/card.svg")['status'] === 200, 'page script and card art are served');
     check(http('GET', "{$base}/api/ext/social/v1/feed")['status'] === 200, 'feed is public by default');
+    $ics = http('GET', "{$base}/api/ext/social/v1/events.ics");
+    check($ics['status'] === 200 && str_starts_with($ics['headers']['content-type'] ?? '', 'text/calendar') && str_starts_with($ics['body'], 'BEGIN:VCALENDAR')
+        && str_contains($ics['headers']['content-security-policy'] ?? '', "default-src 'none'"), 'raw extension responses (events.ics) are served as text/calendar with a locked-down CSP');
 
     $cookie = ['Cookie' => "webring_hub_session={$rawToken}", 'Content-Type' => 'application/json'];
     $reactBody = (string) json_encode(['did' => 'did:web:mallory.example', 'itemId' => 'm1', 'reaction' => 'like', 'on' => true]);

@@ -290,9 +290,9 @@ Included:
 - **`key-witness`**: records which signing key the hub saw for each listed site, and how any change was accepted. Webring Studio's **Check with Webring Hubs** button compares this with the key Studio pinned for a friend. When it's enabled, existing entries are filled in as `first-seen`.
 - **`arcade`**: self-hosted HTML5/JavaScript arcade at `/ext/arcade/` with sandboxed games (`vector-rift` and `starfall-siege` included), DID high-score leaderboards, play history, and operator moderation at `/ext/arcade/admin.html`.
 - **`webhook-sync`**: signed publish pings from Webring Studio sites, a background worker (`scripts/sync-worker.php`) that re-syncs changed sites, and a verified feed of members' `items.json` posts. See [docs/webhook-sync.md](docs/webhook-sync.md).
-- **`social`** (needs `webhook-sync`): **Conversations** at `/ext/social/`. Threads built from members' signed comments, one-tap reactions, member reports with admin hide/restore on `/admin`, and an Activity view of replies, mentions and reactions. Posts and comments stay on members' own sites; reactions and reports are stored only for members who opt in. See [docs/social.md](docs/social.md).
+- **`social`** (needs `webhook-sync`): **Conversations** at `/ext/social/`. Threads built from members' signed comments, one-tap reactions, member reports with admin hide/restore on `/admin`, an Activity view of replies, mentions and reactions, plus **events with RSVPs** (and a calendar feed), **polls**, an **asks & offers board** matched to members' interests, and a **weekly digest** (with an Atom feed). Posts and comments stay on members' own sites; reactions and reports are stored only for members who opt in. See [docs/social.md](docs/social.md).
 
-Run `php scripts/smoke-extensions.php`, `php scripts/smoke-arcade.php`, `php scripts/smoke-webhook-sync.php` and `php scripts/smoke-social.php` to check the framework and the included extensions against a temporary SQLite database.
+Run `php scripts/smoke-extensions.php`, `php scripts/smoke-arcade.php`, `php scripts/smoke-webhook-sync.php`, `php scripts/smoke-social.php` and `php scripts/smoke-social-groups.php` to check the framework and the included extensions against a temporary SQLite database.
 
 ## Self-service removal
 
