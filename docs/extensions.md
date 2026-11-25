@@ -48,6 +48,7 @@ Every extension must follow these rules. They carry Webring Studio's static-site
 1. **Off by default.** An extension runs only when the operator lists it.
 2. **Hints, not truth.** Whatever an extension serves is evidence for the person reading it. Clients show it and throw it away. They never store or republish it, and it never overrides a key a client pinned itself. Design responses so they still make sense when treated as hints.
 3. **Data only from verified sources.** Learn about sites only from core events, which fire after the hub has verified the site's signed files, or from your own fetches through `$ctx->fetchJson()`, which applies the private-network guard. Never accept content uploads about a site.
+   - **Members' own actions.** A signed-in member may record small actions about their *own* participation, such as a reaction or a report, through routes with `requireOptIn`. Only members who opted in to your extension can do this, and you must delete it all on `user.extension_opt_out`. Posts, comments and anything else that is content stay on the member's own signed site.
 4. **Stay in your namespace.**
    - Routes go under `/api/ext/<id>/v<n>/`.
    - Tables are named `$ctx->table('…')`, which gives `ext_<id>_…`.
@@ -109,6 +110,8 @@ extensions/
 | `apiVersion` | The host API version you target. This hub supports `1`. |
 | `class` | Fully qualified class in `Extension.php` that implements `WebringHub\Extension`. |
 | `routes`, `events`, `tables` | Declarations for reviewers and operators. The routes and listeners actually registered appear in `GET /api/admin/extensions`. |
+| `reads` | Optional list of other extension ids whose tables you read (for example `["webhook-sync"]`). The hub loads those first, whatever the config order, and refuses to load yours (with a message naming the missing one on `/admin`) if they aren't enabled. Use `$ctx->readTable()` to get their table names. |
+| `userData` | Optional `{ "optInRequired": true, "summary": "…" }` when you store data under a member's DID. The hub lists it in the member's **My Data** dialog, where they opt in or out. |
 
 ### `Extension.php`
 
@@ -141,11 +144,13 @@ final class MyExtension implements Extension
 
 | Method | What it does |
 | --- | --- |
-| `get(string $subPath, callable $handler, array $opts = [])` | Adds a GET (and HEAD) route at `/api/ext/<id>/<subPath>`. `$subPath` must start with a version segment such as `v1/`. `{name}` matches one path segment, URL-decoded. Options: `admin` (needs the Bearer admin token) and `rateLimited` (counts toward the write rate limit). |
+| `get(string $subPath, callable $handler, array $opts = [])` | Adds a GET (and HEAD) route at `/api/ext/<id>/<subPath>`. `$subPath` must start with a version segment such as `v1/`. `{name}` matches one path segment, URL-decoded. Options: `admin` (needs the Bearer admin token), `rateLimited` (counts toward the write rate limit), `userAuth` (needs a signed-in member; POST/DELETE also need the `X-Hub-Csrf` header) and `requireOptIn` (as `userAuth`, and the member must have opted in to your extension). |
 | `post(...)` | The same, for POST. Read the body with `$req->json()` (64 KB limit, JSON object). |
 | `delete(...)` | The same, for DELETE. |
 | `serveFiles(string $prefix, string $dir, array $opts = [])` | Serves static files inside `$dir` (which must resolve under the extension folder) at `/ext/<id>/<prefix>/...` with an explicit web-safe MIME allowlist, ETag/304 support, traversal/dotfile blocking, optional `cors`, `csp`, and `frameable` headers. |
-| `on(string $event, callable $handler)` | Listens for a core event (below). |
+| `on(string $event, callable $handler)` | Listens for a core event (below), or for `ext.<id>.<name>` emitted by another extension. |
+| `emit(string $name, array $payload)` | Broadcasts `ext.<your id>.<name>` to every listener. Call it after your own changes are committed; listeners run inline and their failures are logged and ignored. |
+| `readTable(string $extId, string $suffix)` | Another extension's table name, for an extension listed in your `reads`. Read it only; never write to another extension's tables. |
 | `migrate(int $version, callable $up)` | Runs `$up(PDO $pdo, string $driver)` once when the stored schema version is lower. Call it with increasing versions. The version is kept in `settings` under `ext:<id>:schema`. Support both `sqlite` and `mysql`. |
 | `table(string $suffix)` | Your table name: `ext_<id with - as _>_<suffix>`. |
 | `pdo()`, `driver()` | The shared connection, and `'sqlite'` or `'mysql'`. |
@@ -154,7 +159,7 @@ final class MyExtension implements Extension
 | `fetchJson(string $url)` | `Net::safeGetJson` with the hub's guard settings: https only, no private addresses, size and time limits. |
 | `isoNow()` | The core's timestamp format. |
 
-A route handler receives `(array $params, ExtensionRequest $req)`. `$req` has `method`, `path`, `query`, `json()` (the request body, read on demand) and `clientKey`: a salted hash that identifies the caller's IP address without revealing it, for your own per-client limits. Never store raw IPs. The handler returns either an array (sent as JSON with status 200) or `[int $status, array $body]`. Throw `WebringHub\AppError` for error responses, for example `new AppError(404, 'not_found', 'No such entry.')`; they use the core's `{error, message}` shape.
+A route handler receives `(array $params, ExtensionRequest $req)`. `$req` has `method`, `path`, `query`, `json()` (the request body, read on demand) and `clientKey`: a salted hash that identifies the caller's IP address without revealing it, for your own per-client limits. Never store raw IPs. `$req->userDid` is the signed-in member's DID (or `null`) and `$req->userOptedIn` says whether they opted in to your extension. On a POST or DELETE to a route without `userAuth`/`requireOptIn`, `userDid` is only set when the request also passes the CSRF check, so a cross-site form can't act as the member. The handler returns either an array (sent as JSON with status 200) or `[int $status, array $body]`. Throw `WebringHub\AppError` for error responses, for example `new AppError(404, 'not_found', 'No such entry.')`; they use the core's `{error, message}` shape.
 
 Extension routes are matched only after every core route, so they can never shadow one.
 
@@ -167,6 +172,13 @@ Extension routes are matched only after every core route, so they can never shad
 | `entry.removed` | `did`, `siteUrl`, `reason` (`'self'` or `'admin'`) | After a signed self-removal or an admin delete. **Delete your data for this DID.** |
 | `entry.status_changed` | `did`, `status` | An admin set `active`, `blocked` or `stale`. (A cron sweep marking an entry stale after repeated failures does not fire this; check `status` when serving.) |
 | `cron.refresh` | `checked`, `updated`, `failed` | At the end of `scripts/refresh.php`. A good place for periodic work. |
+| `user.extension_opt_out` | `did`, `extensionId` | A member opted out of an extension in **My Data**. Sent to every extension: check `extensionId` and, when it's yours, delete everything you hold for that DID. |
+
+Extensions can also emit their own events, named `ext.<id>.<name>`:
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `ext.webhook-sync.items_changed` | `did`, `upserted` (item ids), `removed` (item ids), `removedAll` (bool) | After `webhook-sync` stores a member's verified `items.json`, or deletes all their items (removal, block, opt-out). |
 
 ## Versioning
 
@@ -210,6 +222,10 @@ Extension routes are matched only after every core route, so they can never shad
 ## Testing
 
 `php scripts/smoke-extensions.php` runs the loader and key-witness against a temporary SQLite database. It covers loading and refusing extensions, routes, every outcome, removal and a failing listener. Run it after changing the framework or the extension.
+
+## Included: `social`
+
+`extensions/social/` (Conversations & Reactions) is the first extension to build on another one. It declares `"reads": ["webhook-sync"]`, listens for `ext.webhook-sync.items_changed` to index mentions, and stores reactions and reports only for members who opted in. See [social.md](social.md).
 
 ## Planned extensions
 

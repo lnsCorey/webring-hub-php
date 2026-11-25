@@ -61,6 +61,31 @@ async function fetchMe() {
   } catch {
     // Non-fatal: visitor stays signed out
   }
+  document.dispatchEvent(new CustomEvent('webring-hub-auth', { detail: getState() }));
+}
+
+function getState() {
+  return {
+    authenticated: authState.authenticated,
+    user: authState.user,
+    consents: authState.consents.slice(),
+  };
+}
+
+async function setConsent(extensionId, optedIn) {
+  const res = await fetch(`/api/auth/extensions/${encodeURIComponent(extensionId)}/consent`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'content-type': 'application/json',
+      'x-hub-csrf': authState.csrfToken || '',
+    },
+    body: JSON.stringify({ optedIn: Boolean(optedIn) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  await fetchMe();
+  if (!res.ok) throw new Error(data.message || 'Could not update consent.');
+  return getState();
 }
 
 function renderHeader() {
@@ -196,31 +221,17 @@ function renderMyDataList() {
       btn.disabled = true;
       setMsg(els.myDataStatus, item.optedIn ? 'Opting out and deleting data…' : 'Saving opt-in…');
       try {
-        const res = await fetch(`/api/auth/extensions/${encodeURIComponent(item.extensionId)}/consent`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            'content-type': 'application/json',
-            'x-hub-csrf': authState.csrfToken || '',
-          },
-          body: JSON.stringify({ optedIn: !item.optedIn }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setMsg(els.myDataStatus, data.message || 'Could not update consent.', 'error');
-        } else {
-          setMsg(
-            els.myDataStatus,
-            item.optedIn
-              ? `Opted out of ${item.name || item.extensionId}. Your data has been deleted.`
-              : `Opted in to ${item.name || item.extensionId}.`,
-            'success'
-          );
-          await fetchMe();
-          renderMyDataList();
-        }
-      } catch {
-        setMsg(els.myDataStatus, 'Network error updating consent.', 'error');
+        await setConsent(item.extensionId, !item.optedIn);
+        setMsg(
+          els.myDataStatus,
+          item.optedIn
+            ? `Opted out of ${item.name || item.extensionId}. Your data has been deleted.`
+            : `Opted in to ${item.name || item.extensionId}.`,
+          'success'
+        );
+        renderMyDataList();
+      } catch (err) {
+        setMsg(els.myDataStatus, err instanceof Error ? err.message : 'Network error updating consent.', 'error');
       } finally {
         btn.disabled = false;
       }
@@ -275,4 +286,18 @@ if (els.signOutBtn) {
   });
 }
 
-fetchMe();
+const ready = fetchMe();
+
+/**
+ * Small API for hub pages served by extensions (e.g. /ext/social/), so they reuse this sign-in
+ * and consent flow instead of copying it. Listen for the `webring-hub-auth` event on `document`
+ * to hear about sign-in, sign-out and consent changes.
+ */
+window.webringHubAuth = Object.freeze({
+  ready: ready.then(getState),
+  getState,
+  refresh: () => fetchMe().then(getState),
+  csrfToken: () => authState.csrfToken || '',
+  openSignIn: (extensionId = '') => openSignInDialog(extensionId),
+  setConsent,
+});

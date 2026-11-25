@@ -143,7 +143,13 @@ $ctx = $extensions->context('webhook-sync');
 
 echo "loader & manifest\n";
 check($extensions->isLoaded('webhook-sync') && $ctx !== null, 'webhook-sync extension loads cleanly');
-check($ctx !== null && $ctx->schemaVersion() === 1, 'webhook-sync migrated to schema 1');
+check($ctx !== null && $ctx->schemaVersion() === 2, 'webhook-sync migrated to schema 2');
+$itemEvents = [];
+if ($ctx !== null) {
+    $ctx->on('ext.webhook-sync.items_changed', static function (array $e) use (&$itemEvents): void {
+        $itemEvents[] = $e;
+    });
+}
 $adminList = $extensions->adminList();
 $wsAdmin = array_values(array_filter($adminList, static fn (array $e): bool => $e['id'] === 'webhook-sync'))[0] ?? null;
 check($wsAdmin !== null && ($wsAdmin['kind'] ?? '') === 'admin' && count($wsAdmin['panels'] ?? []) === 2, 'declares 2 valid admin UI panels');
@@ -393,6 +399,10 @@ $mockFetcher = static function (string $url, array $opts) use (
 
 $batch1 = WebhookSyncExtension::runBatch($pdo, $ctx, $extensions, 15, time() + 10, $mockFetcher);
 check($batch1['claimed'] === 2 && $batch1['completed'] === 2 && $batch1['failed'] === 0, 'worker syncs both Alice and rotated-key Bob in batch');
+check(count($itemEvents) === 2 && $itemEvents[0]['upserted'] !== [] && $itemEvents[0]['removedAll'] === false, 'emits ext.webhook-sync.items_changed after each synced member');
+$likeTarget = $pdo->query("SELECT target_url FROM ext_webhook_sync_items WHERE item_id = 'like-1'")->fetchColumn();
+check($likeTarget === 'https://bob.example/api/items.json#p1', 'stores the item targetUrl in the indexed target_url column');
+$itemEvents = [];
 
 // Monotonic ping rejection: older or equal timestamp than verified manifest (11:04:00) is refused
 [$sStale, $bStale] = callExt($extensions, 'POST', '/api/ext/webhook-sync/v1/ping', [], signPing([
@@ -438,6 +448,7 @@ check(
 );
 $aliceItemCount = (int) $pdo->query("SELECT COUNT(*) FROM ext_webhook_sync_items WHERE did = '{$aliceDid}'")->fetchColumn();
 check($aliceItemCount === 1, 'deleted item is pruned from hub feed items');
+check(count($itemEvents) === 1 && $itemEvents[0]['removed'] === ['like-1'], 'items_changed lists the pruned item id');
 
 // Exponential backoff (5 attempts -> failed, preserving Bob's previously verified item)
 callExt($extensions, 'POST', '/api/ext/webhook-sync/v1/ping', [], signPing([

@@ -1,0 +1,119 @@
+{
+  "id": "social",
+  "name": "Conversations & Reactions",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "class": "WebringHub\\Ext\\Social\\SocialExtension",
+  "description": "Threads built from members' signed comments, one-tap reactions, member reports with admin moderation, and an activity view of replies, mentions and reactions.",
+  "author": "Webring Suite",
+  "homepage": "",
+  "reads": ["webhook-sync"],
+  "routes": [
+    "GET v1/config",
+    "GET v1/feed",
+    "GET v1/thread",
+    "POST v1/reactions",
+    "POST v1/reports",
+    "GET v1/me/activity",
+    "POST v1/me/activity/seen",
+    "GET v1/admin/summary",
+    "GET v1/admin/reports",
+    "GET v1/admin/hidden",
+    "POST v1/admin/reports/{id}/hide",
+    "POST v1/admin/reports/{id}/dismiss",
+    "POST v1/admin/hidden/{id}/restore"
+  ],
+  "events": [
+    "entry.removed",
+    "entry.status_changed",
+    "user.extension_opt_out",
+    "cron.refresh",
+    "ext.webhook-sync.items_changed"
+  ],
+  "tables": ["reactions", "mentions", "reports", "hidden", "seen", "limits"],
+  "public": ["/ext/social/"],
+  "userData": {
+    "optInRequired": true,
+    "summary": "Stores your reactions, the reports you send and when you last read your activity, under your DID. Your posts and comments stay on your own site."
+  },
+  "ui": {
+    "public": {
+      "title": "Conversations",
+      "tagline": "Talk with other members: threads, reactions and mentions",
+      "href": "/ext/social/",
+      "cta": "Join the conversation",
+      "art": "card.svg",
+      "accent": "cyan"
+    },
+    "admin": {
+      "panels": [
+        {
+          "id": "social-overview",
+          "title": "Conversations overview",
+          "type": "stats",
+          "source": "v1/admin/summary",
+          "items": [
+            { "key": "openReports", "label": "Items with open reports" },
+            { "key": "hiddenItems", "label": "Hidden items" },
+            { "key": "reactions7d", "label": "Reactions (7 days)" },
+            { "key": "activeThreads7d", "label": "Active threads (7 days)" }
+          ]
+        },
+        {
+          "id": "social-reports",
+          "title": "Open reports",
+          "description": "Hiding removes an item from the hub's conversation pages only; the member's site is not changed. To remove a member entirely, block their entry.",
+          "type": "table",
+          "source": "v1/admin/reports?status=open",
+          "itemsKey": "reports",
+          "emptyMessage": "No open reports.",
+          "columns": [
+            { "key": "author", "label": "Author" },
+            { "key": "excerpt", "label": "Item" },
+            { "key": "reasons", "label": "Reasons" },
+            { "key": "reportCount", "label": "Reports" },
+            { "key": "visibility", "label": "Now", "as": "badge" },
+            { "key": "firstReported", "label": "First reported", "as": "time" }
+          ],
+          "actions": [
+            {
+              "label": "Hide",
+              "method": "POST",
+              "path": "v1/admin/reports/{id}/hide",
+              "confirm": "Hide this item from the hub's conversation pages?",
+              "style": "danger"
+            },
+            {
+              "label": "Dismiss",
+              "method": "POST",
+              "path": "v1/admin/reports/{id}/dismiss",
+              "confirm": "Dismiss these reports? An automatic hide is undone."
+            }
+          ]
+        },
+        {
+          "id": "social-hidden",
+          "title": "Hidden items",
+          "type": "table",
+          "source": "v1/admin/hidden",
+          "itemsKey": "hidden",
+          "emptyMessage": "Nothing is hidden.",
+          "columns": [
+            { "key": "author", "label": "Author" },
+            { "key": "excerpt", "label": "Item" },
+            { "key": "reason", "label": "Hidden by", "as": "badge" },
+            { "key": "hiddenAt", "label": "Hidden", "as": "time" }
+          ],
+          "actions": [
+            {
+              "label": "Restore",
+              "method": "POST",
+              "path": "v1/admin/hidden/{id}/restore",
+              "confirm": "Show this item on the hub again?"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -63,6 +63,9 @@ final class WebhookSyncExtension implements Extension
         $ctx->migrate(1, function (PDO $pdo, string $driver): void {
             $this->createTables($pdo, $driver);
         });
+        $ctx->migrate(2, function (PDO $pdo, string $driver): void {
+            $this->addTargetUrl($pdo, $driver);
+        });
 
         $ctx->on('entry.removed', fn (array $e) => $this->purgeDid((string) ($e['did'] ?? '')));
         $ctx->on('entry.status_changed', function (array $e): void {
@@ -528,6 +531,7 @@ final class WebhookSyncExtension implements Extension
         $pdo->prepare("DELETE FROM {$this->queueTable} WHERE member_did = ?")->execute([$did]);
         $pdo->prepare("DELETE FROM {$this->stateTable} WHERE did = ?")->execute([$did]);
         $pdo->prepare("DELETE FROM {$this->itemsTable} WHERE did = ?")->execute([$did]);
+        $this->ctx->emit('items_changed', ['did' => $did, 'upserted' => [], 'removed' => [], 'removedAll' => true]);
     }
 
     // =========================================================================
@@ -809,6 +813,7 @@ final class WebhookSyncExtension implements Extension
         }
 
         // 2. Differential items.json sync (only when fingerprint changed or not yet cached)
+        $itemChanges = null;
         $hasCachedItemsDoc = !empty($state['raw_items_doc_json']);
         $needItems = !$hasCachedItemsDoc || $declaredItemsSha === '' || $declaredItemsSha !== $prevItemsSha;
         $newItemsSha = $prevItemsSha;
@@ -837,7 +842,7 @@ final class WebhookSyncExtension implements Extension
                 ? $itemsRes['rawBody']
                 : (json_encode($itemsObj, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: null);
 
-            self::upsertVerifiedItems($pdo, $ctx->driver(), $itemsTable, $did, $itemsDoc);
+            $itemChanges = self::upsertVerifiedItems($pdo, $ctx->driver(), $itemsTable, $did, $itemsDoc);
         }
 
         $etag = isset($manifestRes['headers']['etag']) ? substr($manifestRes['headers']['etag'], 0, 255) : null;
@@ -856,6 +861,16 @@ final class WebhookSyncExtension implements Extension
             $rawItemsDocJson,
             $nowIso
         );
+
+        if ($itemChanges !== null && ($itemChanges['upserted'] !== [] || $itemChanges['removed'] !== [])) {
+            // Lets other extensions (e.g. `social`) index the member's items; listeners can't fail the sync.
+            $ctx->emit('items_changed', [
+                'did' => $did,
+                'upserted' => $itemChanges['upserted'],
+                'removed' => $itemChanges['removed'],
+                'removedAll' => false,
+            ]);
+        }
 
         return 'synced';
     }
@@ -924,6 +939,7 @@ final class WebhookSyncExtension implements Extension
 
     /**
      * @param array<string, mixed> $itemsDoc
+     * @return array{upserted: list<string>, removed: list<string>}
      */
     private static function upsertVerifiedItems(
         PDO $pdo,
@@ -931,7 +947,7 @@ final class WebhookSyncExtension implements Extension
         string $itemsTable,
         string $did,
         array $itemsDoc
-    ): void {
+    ): array {
         $rawItems = is_array($itemsDoc['items'] ?? null) ? $itemsDoc['items'] : [];
         $archiveSince = null;
         if (is_array($itemsDoc['archive'] ?? null) && isset($itemsDoc['archive']['since'])) {
@@ -946,19 +962,21 @@ final class WebhookSyncExtension implements Extension
             $seenIds = [];
             $upsertSql = $driver === 'sqlite'
                 ? "INSERT INTO {$itemsTable}
-                     (did, item_id, canonical_url, content_type, published_at, updated_at, raw_item_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                     (did, item_id, canonical_url, content_type, published_at, updated_at, raw_item_json, target_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(did, item_id) DO UPDATE SET
                      canonical_url = excluded.canonical_url,
+                     target_url = excluded.target_url,
                      content_type = excluded.content_type,
                      published_at = excluded.published_at,
                      updated_at = excluded.updated_at,
                      raw_item_json = excluded.raw_item_json"
                 : "INSERT INTO {$itemsTable}
-                     (did, item_id, canonical_url, content_type, published_at, updated_at, raw_item_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                     (did, item_id, canonical_url, content_type, published_at, updated_at, raw_item_json, target_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON DUPLICATE KEY UPDATE
                      canonical_url = VALUES(canonical_url),
+                     target_url = VALUES(target_url),
                      content_type = VALUES(content_type),
                      published_at = VALUES(published_at),
                      updated_at = VALUES(updated_at),
@@ -992,37 +1010,32 @@ final class WebhookSyncExtension implements Extension
                     continue;
                 }
 
-                $stmt->execute([$did, $itemId, $canonicalUrl, $type, $publishedAt, $updatedAt, $rawJson]);
+                $stmt->execute([$did, $itemId, $canonicalUrl, $type, $publishedAt, $updatedAt, $rawJson, self::normalizeTargetUrl($item['targetUrl'] ?? null)]);
                 $seenIds[] = $itemId;
             }
 
             // Prune items deleted by the author inside the active (non-archived) window
-            if (count($seenIds) === 0) {
-                if ($archiveSince !== null) {
-                    $del = $pdo->prepare("DELETE FROM {$itemsTable} WHERE did = ? AND published_at >= ?");
-                    $del->execute([$did, $archiveSince]);
-                } else {
-                    $del = $pdo->prepare("DELETE FROM {$itemsTable} WHERE did = ?");
-                    $del->execute([$did]);
-                }
-            } else {
-                $placeholders = implode(',', array_fill(0, count($seenIds), '?'));
-                if ($archiveSince !== null) {
-                    $del = $pdo->prepare(
-                        "DELETE FROM {$itemsTable} WHERE did = ? AND published_at >= ? AND item_id NOT IN ({$placeholders})"
-                    );
-                    $del->execute(array_merge([$did, $archiveSince], $seenIds));
-                } else {
-                    $del = $pdo->prepare(
-                        "DELETE FROM {$itemsTable} WHERE did = ? AND item_id NOT IN ({$placeholders})"
-                    );
-                    $del->execute(array_merge([$did], $seenIds));
-                }
+            $where = 'did = ?';
+            $args = [$did];
+            if ($archiveSince !== null) {
+                $where .= ' AND published_at >= ?';
+                $args[] = $archiveSince;
+            }
+            if (count($seenIds) > 0) {
+                $where .= ' AND item_id NOT IN (' . implode(',', array_fill(0, count($seenIds), '?')) . ')';
+                $args = array_merge($args, $seenIds);
+            }
+            $sel = $pdo->prepare("SELECT item_id FROM {$itemsTable} WHERE {$where}");
+            $sel->execute($args);
+            $removedIds = array_map('strval', $sel->fetchAll(PDO::FETCH_COLUMN));
+            if ($removedIds !== []) {
+                $pdo->prepare("DELETE FROM {$itemsTable} WHERE {$where}")->execute($args);
             }
 
             if ($owntx) {
                 $pdo->commit();
             }
+            return ['upserted' => array_values(array_unique($seenIds)), 'removed' => $removedIds];
         } catch (\Throwable $err) {
             if ($owntx && $pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -1076,6 +1089,75 @@ final class WebhookSyncExtension implements Extension
               synced_at = VALUES(synced_at)
         ");
         $stmt->execute([$did, $etag, $lastModified, $manifestUpdatedAt, $profileSha256, $itemsSha256, $rawItemsDocJson, $syncedAt]);
+    }
+
+    /**
+     * An item's `targetUrl` as stored for reply lookups: trimmed, http(s) only, at most 500
+     * characters; anything else is null.
+     */
+    public static function normalizeTargetUrl(mixed $raw): ?string
+    {
+        if (!is_string($raw)) {
+            return null;
+        }
+        $url = trim($raw);
+        if ($url === '' || strlen($url) > 500 || !preg_match('#^https?://[^\s]+$#i', $url)) {
+            return null;
+        }
+        return $url;
+    }
+
+    /**
+     * Schema v2: an indexed `target_url` column (backfilled from `raw_item_json`) and an index on
+     * `canonical_url`, so replies can be matched to the items they answer. On MySQL both columns use
+     * utf8mb4_bin so URLs compare exactly and can be joined without a collation mismatch.
+     */
+    private function addTargetUrl(PDO $pdo, string $driver): void
+    {
+        $t = $this->itemsTable;
+        if ($driver === 'sqlite') {
+            $cols = array_column($pdo->query("PRAGMA table_info({$t})")->fetchAll(), 'name');
+            if (!in_array('target_url', $cols, true)) {
+                $pdo->exec("ALTER TABLE {$t} ADD COLUMN target_url TEXT DEFAULT NULL");
+            }
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_{$t}_target ON {$t}(target_url)");
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_{$t}_canonical ON {$t}(canonical_url)");
+        } else {
+            $colStmt = $pdo->prepare(
+                'SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?'
+            );
+            $colStmt->execute([$t, 'target_url']);
+            $hasColumn = (int) $colStmt->fetchColumn() > 0;
+            $idxStmt = $pdo->prepare(
+                'SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?'
+            );
+            $idxStmt->execute([$t, 'idx_items_target']);
+            $hasTargetIdx = (int) $idxStmt->fetchColumn() > 0;
+            $idxStmt->execute([$t, 'idx_items_canonical']);
+            $hasCanonicalIdx = (int) $idxStmt->fetchColumn() > 0;
+
+            $alter = ['MODIFY canonical_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL'];
+            if (!$hasColumn) {
+                $alter[] = 'ADD COLUMN target_url VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL';
+            }
+            if (!$hasTargetIdx) {
+                $alter[] = 'ADD KEY idx_items_target (target_url)';
+            }
+            if (!$hasCanonicalIdx) {
+                $alter[] = 'ADD KEY idx_items_canonical (canonical_url)';
+            }
+            $pdo->exec("ALTER TABLE {$t} " . implode(', ', $alter));
+        }
+
+        $sel = $pdo->query("SELECT did, item_id, raw_item_json FROM {$t} WHERE target_url IS NULL");
+        $upd = $pdo->prepare("UPDATE {$t} SET target_url = ? WHERE did = ? AND item_id = ?");
+        foreach ($sel->fetchAll() as $row) {
+            $item = json_decode((string) $row['raw_item_json'], true);
+            $target = is_array($item) ? self::normalizeTargetUrl($item['targetUrl'] ?? null) : null;
+            if ($target !== null) {
+                $upd->execute([$target, $row['did'], $row['item_id']]);
+            }
+        }
     }
 
     private function createTables(PDO $pdo, string $driver): void
