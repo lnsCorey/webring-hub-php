@@ -929,6 +929,11 @@ trait Groups
             ], $members->fetchAll()),
             'openPolls' => array_slice($this->loadPolls('open', 5, $viewer), 0, 5),
             'newListings' => $this->loadListings('', 'open', 5, $viewer, $from),
+            'spotlight' => $this->belongingReady ? ($this->loadSpotlight($viewer)['member'] ?? null) : null,
+            'welcome' => $this->belongingReady ? array_slice($this->loadWelcome($viewer)['members'] ?? [], 0, 6) : [],
+            'readingList' => $this->structureReady ? $this->loadLibrary(7, 10, $viewer) : [],
+            'nowUpdates' => $this->structureReady ? $this->loadNowWall(8) : [],
+            'activeChallenges' => $this->structureReady ? ($this->handleChallenges(new ExtensionRequest('GET', '', [], static fn () => [], '', $viewer))['active'] ?? []) : [],
         ];
     }
 

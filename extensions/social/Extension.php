@@ -10,6 +10,8 @@ use WebringHub\ExtensionContext;
 use WebringHub\ExtensionRequest;
 
 require_once __DIR__ . '/Groups.php';
+require_once __DIR__ . '/Belonging.php';
+require_once __DIR__ . '/Structure.php';
 
 /**
  * Conversations & Reactions (`social`): group engagement between verified hub members.
@@ -28,12 +30,22 @@ require_once __DIR__ . '/Groups.php';
 final class SocialExtension implements Extension
 {
     use Groups;
+    use Belonging;
+    use Structure;
 
     public const RSVP_STATUSES = ['going', 'maybe', 'declined'];
     public const MAX_POLL_OPTIONS = 8;
     public const POLLS_PER_DAY = 5;
     public const RSVPS_PER_HOUR = 60;
     public const VOTES_PER_HOUR = 60;
+    public const VOUCH_KINDS = ['met', 'skill', 'worked-with'];
+    public const GREETING_KINDS = ['wave', 'welcome', 'coffee'];
+    public const GREETINGS_PER_HOUR = 30;
+    public const BUILTIN_ROLES = ['organizer', 'moderator'];
+    public const BADGE_KEYS = ['host', 'helper', 'voice', 'welcomer', 'voucher', 'founding', 'participant', 'champion'];
+    public const GUESTBOOK_MAX_LEN = 280;
+    public const GUESTBOOK_PER_DAY = 20;
+    public const MAX_FOLLOWS_PER_MEMBER = 50;
     public const DEFAULT_REACTIONS = ['like', 'heart', 'celebrate', 'think'];
     public const REPORT_REASONS = ['spam', 'abuse', 'off-topic', 'other'];
     public const MAX_THREAD_DEPTH = 6;
@@ -71,6 +83,8 @@ final class SocialExtension implements Extension
             $this->reindexMentions(null);
         });
         $this->registerGroups($ctx);
+        $this->registerBelonging($ctx);
+        $this->registerStructure($ctx);
 
         $ctx->serveFiles('', 'public', [
             'csp' => "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -92,6 +106,8 @@ final class SocialExtension implements Extension
         $ctx->on('cron.refresh', function (): void {
             $this->pruneOrphans();
             $this->reindexMentions(gmdate('Y-m-d\TH:i:s.000\Z', time() - self::RECONCILE_DAYS * 86400));
+            $this->closeExpiredChallenges();
+            $this->recomputeBadges();
         });
 
         $ctx->get('v1/feed', fn (array $p, ExtensionRequest $req) => $this->handleFeed($req));
@@ -156,11 +172,19 @@ final class SocialExtension implements Extension
     private function handleConfig(ExtensionRequest $req): array
     {
         return [
+            'hubTitle' => $this->ctx->hubTitle(),
             'reactions' => $this->reactionKeys(),
             'reportReasons' => self::REPORT_REASONS,
+            'greetingKinds' => self::GREETING_KINDS,
+            'spotlightEnabled' => $this->spotlightEnabled(),
+            'welcomeDays' => $this->welcomeDays(),
+            'allowedRoles' => $this->allowedRoles(),
             'membersOnly' => $this->membersOnly(),
             'signedIn' => $req->userDid !== null,
             'optedIn' => $req->userOptedIn,
+            'myDid' => $req->userDid,
+            'myGuestbookEnabled' => $req->userDid !== null && $this->belongingReady ? $this->isGuestbookEnabled($req->userDid) : false,
+            'myHideVouches' => $req->userDid !== null && $this->belongingReady ? $this->isVouchHiddenBySubject($req->userDid) : false,
         ];
     }
 
@@ -170,6 +194,10 @@ final class SocialExtension implements Extension
         $this->requireReader($req);
         $limit = max(1, min(100, (int) ($req->query['limit'] ?? 30)));
         $type = is_string($req->query['type'] ?? null) ? trim($req->query['type']) : '';
+        $tag = is_string($req->query['tag'] ?? null) ? trim($req->query['tag']) : '';
+        $from = is_string($req->query['from'] ?? null) ? trim($req->query['from']) : '';
+        $to = is_string($req->query['to'] ?? null) ? trim($req->query['to']) : '';
+        $q = is_string($req->query['q'] ?? null) ? mb_substr(trim($req->query['q']), 0, 100) : '';
         $before = is_string($req->query['before'] ?? null) ? trim($req->query['before']) : '';
 
         $owned = $this->ownedSql('p', 'pe');
@@ -190,6 +218,45 @@ final class SocialExtension implements Extension
             }
             $sql .= ' AND i.content_type = ?';
             $args[] = $type;
+        }
+        if ($tag !== '' && $this->structureReady) {
+            if ($tag === '__following') {
+                $followed = $this->followedTagsFor($req->userDid);
+                if ($followed === []) {
+                    return ['items' => [], 'nextCursor' => null];
+                }
+                $ph = implode(',', array_fill(0, count($followed), '?'));
+                $sql .= " AND EXISTS (SELECT 1 FROM {$this->tItemTags} t WHERE t.item_did = i.did AND t.item_id = i.item_id AND t.tag IN ({$ph}))";
+                array_push($args, ...$followed);
+            } else {
+                $normTag = self::normalizeChannelTag($tag);
+                if ($normTag === null) {
+                    throw new AppError(400, 'invalid_tag', 'Invalid channel tag.');
+                }
+                $sql .= " AND EXISTS (SELECT 1 FROM {$this->tItemTags} t WHERE t.item_did = i.did AND t.item_id = i.item_id AND t.tag = ?)";
+                $args[] = $normTag;
+            }
+        }
+        if ($from !== '') {
+            $fromUtc = self::isoUtc($from);
+            if ($fromUtc === null) {
+                throw new AppError(400, 'invalid_range', 'Invalid from timestamp.');
+            }
+            $sql .= ' AND i.published_at >= ?';
+            $args[] = $fromUtc;
+        }
+        if ($to !== '') {
+            $toUtc = self::isoUtc($to);
+            if ($toUtc === null) {
+                throw new AppError(400, 'invalid_range', 'Invalid to timestamp.');
+            }
+            $sql .= ' AND i.published_at <= ?';
+            $args[] = $toUtc;
+        }
+        if ($q !== '') {
+            $like = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], mb_strtolower($q)) . '%';
+            $sql .= " AND (LOWER(i.raw_item_json) LIKE ? ESCAPE '!' OR LOWER(e.display_name) LIKE ? ESCAPE '!' OR LOWER(e.handle) LIKE ? ESCAPE '!')";
+            array_push($args, $like, $like, $like);
         }
         if ($before !== '') {
             $parts = explode('|', $before, 3);
@@ -759,6 +826,8 @@ final class SocialExtension implements Extension
     {
         $this->indexMentions($row);
         $this->indexGroupItem($row);
+        $this->indexVouch($row);
+        $this->indexItemTags($row);
     }
 
     /**
@@ -863,7 +932,7 @@ final class SocialExtension implements Extension
     private function deleteItemRows(string $did, ?array $itemIds): void
     {
         $pdo = $this->ctx->pdo();
-        $tables = array_merge([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden], $this->groupItemTables());
+        $tables = array_merge([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden], $this->groupItemTables(), $this->belongingItemTables(), $this->structureItemTables());
         if ($itemIds === null) {
             foreach ($tables as $t) {
                 $pdo->prepare("DELETE FROM {$t} WHERE item_did = ?")->execute([$did]);
@@ -887,6 +956,7 @@ final class SocialExtension implements Extension
         }
         $this->deleteItemRows($did, null);
         $this->purgeUserData($did);
+        $this->purgeBelongingMember($did);
         $this->ctx->pdo()->prepare("DELETE FROM {$this->tMentions} WHERE mentioned_did = ?")->execute([$did]);
         $this->handleMap = null;
     }
@@ -903,13 +973,15 @@ final class SocialExtension implements Extension
         $pdo->prepare("DELETE FROM {$this->tSeen} WHERE did = ?")->execute([$did]);
         $pdo->prepare("DELETE FROM {$this->tLimits} WHERE did = ?")->execute([$did]);
         $this->purgeGroupUserData($did);
+        $this->purgeBelongingUserData($did);
+        $this->purgeStructureUserData($did);
     }
 
     /** Rows whose item left the hub while this extension wasn't listening. */
     private function pruneOrphans(): void
     {
         $pdo = $this->ctx->pdo();
-        foreach (array_merge([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden], $this->groupItemTables()) as $t) {
+        foreach (array_merge([$this->tReactions, $this->tMentions, $this->tReports, $this->tHidden], $this->groupItemTables(), $this->belongingItemTables(), $this->structureItemTables()) as $t) {
             $pdo->exec(
                 "DELETE FROM {$t} WHERE NOT EXISTS (
                    SELECT 1 FROM {$this->tItems} i WHERE i.did = {$t}.item_did AND i.item_id = {$t}.item_id
@@ -1035,6 +1107,7 @@ final class SocialExtension implements Extension
             'targetAuthorName' => $str('targetAuthorName', 200),
             'event' => self::parseEvent($raw, (string) $row['content_type']),
             'listing' => self::parseListing($raw, (string) $row['content_type']),
+            'vouch' => self::parseVouch($raw, (string) $row['content_type']),
             'author' => [
                 'did' => (string) $row['did'],
                 'siteUrl' => (string) ($row['site_url'] ?? ''),
@@ -1101,6 +1174,7 @@ final class SocialExtension implements Extension
                 : 0;
             $items[$i]['hidden'] = isset($hidden[$k]);
         }
+        $this->decorateAuthors($items);
     }
 
     /**

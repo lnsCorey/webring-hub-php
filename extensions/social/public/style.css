@@ -645,3 +645,271 @@ html[data-theme="light"] .social-kind-ask {
     gap: 6px;
   }
 }
+
+/* ---- Tier 3: vouches, welcome wall, spotlight, roles/badges, guestbooks ---- */
+
+.social-name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.social-author-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.social-role-chip {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  padding: 1px 7px;
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-light);
+}
+
+.social-badge-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: default;
+}
+
+.social-vouch-box {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.social-vouch-box a {
+  color: var(--accent-light);
+  font-weight: 600;
+}
+
+.social-belonging {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.social-section-label {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  color: var(--text-bright);
+}
+
+.social-welcome-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.social-welcome-card {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.social-greetings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.social-intro-link,
+.social-welcome-hint,
+.social-spotlight-post {
+  margin: 4px 0 0;
+}
+
+.social-my-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  margin-bottom: 14px;
+}
+
+.social-people-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 12px;
+}
+
+.social-person-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.social-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 55vh;
+  overflow-y: auto;
+}
+
+.social-vouch-group h3 {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  color: var(--text-bright);
+}
+
+.social-key-warn {
+  color: var(--warning, #f59e0b);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.social-gb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.social-gb-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---- Tier 4: channels, library, now wall, challenges ---- */
+
+.social-channel-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.social-channel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.social-follow-btn {
+  padding-inline: 8px;
+}
+
+.social-challenge-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+/* ---- Daily Feed day / time / search bar ---- */
+
+.social-daily-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.social-daily-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.social-daily-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.social-date-input,
+.social-time-input {
+  width: auto;
+  padding: 6px 8px;
+  font-size: 0.85rem;
+}
+
+.social-daily-search {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
+.social-daily-search .social-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.88rem;
+}
+
+/* ---- Markdown & fenced code blocks ---- */
+
+.md-para {
+  margin: 0 0 8px;
+}
+
+.md-para:last-child {
+  margin-bottom: 0;
+}
+
+.md-inline-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+}
+
+.md-code-block {
+  margin: 8px 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.md-code-lang {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  text-transform: lowercase;
+  color: var(--muted);
+}
+
+.md-code-copy {
+  padding: 2px 8px;
+  font-size: 0.75rem;
+}
+
+.md-code-block pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--text);
+}

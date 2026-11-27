@@ -61,8 +61,8 @@ final class Template
     }
 
     /**
-     * Renders the server-side extension carousel for the home page, or '' when there are no
-     * user-facing extensions enabled. All text is HTML-escaped; no inline styles or handlers.
+     * Renders horizontal navigation tabs for user-facing extensions on the home page, or '' when
+     * none are enabled. All text is HTML-escaped; no inline styles or handlers.
      *
      * @param list<array{id: string, title: string, tagline: string, href: string, cta: string, art: string, accent: string}> $cards
      */
@@ -71,56 +71,24 @@ final class Template
         if (count($cards) === 0) {
             return '';
         }
-        $total = count($cards);
         $allowedAccents = ['magenta', 'cyan', 'yellow', 'green', 'violet', 'orange'];
-        $slidesHtml = '';
-        foreach ($cards as $i => $card) {
-            $num = $i + 1;
+        $tabsHtml = '';
+        foreach ($cards as $card) {
             $accent = in_array($card['accent'] ?? '', $allowedAccents, true) ? $card['accent'] : 'cyan';
-            $artHtml = !empty($card['art'])
-                ? '<div class="ext-card-media"><img class="ext-card-art" src="' . self::escapeHtml($card['art']) . '" alt="" loading="lazy" /></div>'
-                : '';
-            $taglineHtml = ($card['tagline'] ?? '') !== ''
-                ? '<p class="ext-card-tagline">' . self::escapeHtml($card['tagline']) . '</p>'
-                : '';
-            $slidesHtml .= '<article class="ext-card ext-accent-' . $accent . '" role="group" aria-roledescription="slide" aria-label="Slide ' . $num . ' of ' . $total . '" data-ext-id="' . self::escapeHtml($card['id'] ?? '') . '">'
-                . $artHtml
-                . '<div class="ext-card-body">'
-                . '<h3 class="ext-card-title">' . self::escapeHtml($card['title'] ?? '') . '</h3>'
-                . $taglineHtml
-                . '<div class="ext-card-actions">'
-                . '<a class="ext-card-cta" href="' . self::escapeHtml($card['href'] ?? '#') . '">' . self::escapeHtml($card['cta'] ?? 'Open') . '</a>'
-                . '</div>'
-                . '</div>'
-                . '</article>';
+            $title = self::escapeHtml($card['title'] ?? '');
+            $tagline = self::escapeHtml($card['tagline'] ?? '');
+            $href = self::escapeHtml($card['href'] ?? '#');
+            $extId = self::escapeHtml($card['id'] ?? '');
+            $titleAttr = $tagline !== '' ? ' title="' . $tagline . '"' : '';
+            $tabsHtml .= '<a class="hub-home-tab hub-ext-tab ext-accent-' . $accent . '" href="' . $href . '" data-ext-id="' . $extId . '"' . $titleAttr . '>'
+                . '<span class="hub-ext-dot" aria-hidden="true"></span>'
+                . $title
+                . '</a>';
         }
 
-        $controlsHtml = '';
-        if ($total > 1) {
-            $dotsHtml = '';
-            for ($i = 0; $i < $total; $i++) {
-                $num = $i + 1;
-                $current = $i === 0 ? ' aria-current="true"' : ' aria-current="false"';
-                $dotsHtml .= '<button type="button" class="ext-carousel-dot" data-slide-index="' . $i . '" aria-label="Go to slide ' . $num . '"' . $current . '></button>';
-            }
-            $controlsHtml = '<div class="ext-carousel-nav">'
-                . '<button type="button" class="ext-carousel-btn ext-carousel-prev" aria-label="Previous extension">&#8249;</button>'
-                . '<div class="ext-carousel-dots" aria-label="Choose extension slide">' . $dotsHtml . '</div>'
-                . '<button type="button" class="ext-carousel-btn ext-carousel-next" aria-label="Next extension">&#8250;</button>'
-                . '</div>';
-        }
-
-        return '<div class="wrap ext-carousel-wrap">'
-            . '<section class="ext-carousel" aria-roledescription="carousel" aria-label="Hub extensions" tabindex="0">'
-            . '<div class="ext-carousel-head">'
-            . '<h2 class="ext-carousel-heading">Hub extensions</h2>'
-            . '<span class="ext-carousel-status" aria-live="polite">Slide 1 of ' . $total . '</span>'
-            . $controlsHtml
-            . '</div>'
-            . '<div class="ext-carousel-track">'
-            . $slidesHtml
-            . '</div>'
-            . '</section>'
+        return '<span class="hub-home-tabs-divider" aria-hidden="true"></span>'
+            . '<div class="hub-ext-tabs" aria-label="Hub extensions">'
+            . $tabsHtml
             . '</div>';
     }
 
@@ -202,9 +170,7 @@ final class Template
                 $html
             ) ?? $html;
 
-            $carouselScript = $carouselHtml !== ''
-                ? '<script type="module" src="/ext-carousel.js"></script>'
-                : '';
+            $carouselScript = '';
             $html = preg_replace_callback(
                 '/<!--EXTENSION_CARDS_SCRIPT-->[\s\S]*?<!--\/EXTENSION_CARDS_SCRIPT-->/',
                 static fn(): string => $carouselScript,

@@ -49,10 +49,14 @@
       </div>
     </header>
 
-    <!--EXTENSION_CARDS--><!--/EXTENSION_CARDS-->
+    <main class="wrap hub-home-main">
+      <nav id="hub-home-tabs" class="hub-home-tabs" role="tablist" aria-label="Hub sections">
+        <button type="button" class="hub-home-tab" role="tab" data-home-tab="profiles" aria-selected="true" aria-controls="home-tab-profiles">Profiles</button>
+        <button type="button" class="hub-home-tab" role="tab" data-home-tab="join" aria-selected="false" aria-controls="home-tab-join">Add / Manage site</button>
+        <!--EXTENSION_CARDS--><!--/EXTENSION_CARDS-->
+      </nav>
 
-    <main class="wrap layout">
-      <section class="results" aria-labelledby="results-heading">
+      <section id="home-tab-profiles" class="results hub-home-panel" role="tabpanel" aria-labelledby="results-heading">
         <div class="search-row">
           <label class="sr-only" for="search">Search profiles</label>
           <input
@@ -73,7 +77,7 @@
         <button id="more" class="more" type="button" hidden>Load more</button>
       </section>
 
-      <aside class="sidebar">
+      <section id="home-tab-join" class="hub-home-panel hub-join-grid" role="tabpanel" aria-label="Add or manage your site" hidden>
         <section class="panel">
           <h2>Add your site</h2>
           <p>
@@ -99,26 +103,28 @@
           </p>
         </section>
 
-        <section class="panel">
-          <h2>Removing yourself</h2>
-          <p>
-            Removal needs a fresh request signed with the Ed25519 key behind your site. The
-            removal page issues a nonce and walks you through signing it locally.
-          </p>
-          <p><a class="button" href="/remove">Open the removal page</a></p>
-        </section>
+        <div class="hub-join-side">
+          <section class="panel">
+            <h2>Removing yourself</h2>
+            <p>
+              Removal needs a fresh request signed with the Ed25519 key behind your site. The
+              removal page issues a nonce and walks you through signing it locally.
+            </p>
+            <p><a class="button" href="/remove">Open the removal page</a></p>
+          </section>
 
-        <section class="panel">
-          <h2>How it works</h2>
-          <ul>
-            <li>You opt in by submitting your own site URL.</li>
-            <li>Ownership is proven by the signed profile on your site.</li>
-            <li>Edits are picked up on your next publish and refresh.</li>
-            <li>Deletion needs a signed request, or an admin takedown.</li>
-            <li>No accounts, no cookies, no tracking.</li>
-          </ul>
-        </section>
-      </aside>
+          <section class="panel">
+            <h2>How it works</h2>
+            <ul>
+              <li>You opt in by submitting your own site URL.</li>
+              <li>Ownership is proven by the signed profile on your site.</li>
+              <li>Edits are picked up on your next publish and refresh.</li>
+              <li>Deletion needs a signed request, or an admin takedown.</li>
+              <li>No accounts, no cookies, no tracking.</li>
+            </ul>
+          </section>
+        </div>
+      </section>
     </main>
 
     <footer class="wrap footer">

@@ -72,7 +72,7 @@ $load = static function (array $settings = []) use ($dbPath): array {
     return [$pdo, Extensions::load($config, $pdo)];
 };
 [$pdo, $ext] = $load();
-check($ext->isLoaded('social') && ($ext->context('social')?->schemaVersion() ?? 0) === 2, 'social migrates to schema 2');
+check($ext->isLoaded('social') && ($ext->context('social')?->schemaVersion() ?? 0) >= 2, 'social migrates to schema 2+');
 
 $now = Database::isoNow();
 $insEntry = $pdo->prepare(

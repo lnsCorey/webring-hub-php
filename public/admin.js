@@ -2,7 +2,7 @@
 // in this tab's sessionStorage and is sent as a Bearer header, never in a URL. Listing data comes
 // from third-party sites, so it is only ever rendered with textContent.
 
-import { kindBadgeLabel, mountExtensionPanels } from './admin-panels.js';
+import { kindBadgeLabel, mountSingleExtensionPanels } from './admin-panels.js';
 
 const TOKEN_KEY = 'webring-hub-admin-token';
 const PAGE_SIZE = 50;
@@ -38,8 +38,10 @@ const els = {
   settingsMessage: $('settings-message'),
   extList: $('ext-list'),
   extMessage: $('ext-message'),
-  extPanelsSection: $('ext-panels-section'),
-  extPanels: $('ext-panels'),
+  adminTabs: $('admin-tabs'),
+  adminTabsDivider: $('admin-tabs-divider'),
+  adminExtTabs: $('admin-ext-tabs'),
+  adminExtTabPanels: $('admin-ext-tab-panels'),
   notices: $('admin-notices'),
   keyDialog: $('key-dialog'),
   keyDialogSite: $('key-dialog-site'),
@@ -62,7 +64,9 @@ const state = {
   requestId: 0,
   busy: new Set(),
   rowMessages: new Map(),
-  initialSettings: null
+  initialSettings: null,
+  activeTab: 'listings',
+  extTabLoaders: new Map()
 };
 
 // ---- token (sessionStorage only; an in-memory copy covers browsers that block storage) ----
@@ -212,8 +216,10 @@ function signOut(message, kind) {
   els.signinPanel.hidden = false;
   els.body.replaceChildren();
   els.extList.replaceChildren();
-  els.extPanels.replaceChildren();
-  els.extPanelsSection.hidden = true;
+  els.adminExtTabs.replaceChildren();
+  els.adminExtTabPanels.replaceChildren();
+  els.adminTabsDivider.hidden = true;
+  state.extTabLoaders.clear();
   els.notices.replaceChildren();
   els.notices.hidden = true;
   if (els.keyDialog.open) els.keyDialog.close();
@@ -247,8 +253,9 @@ async function signIn(token) {
     els.token.value = '';
     const enabledExts = Array.isArray(data.extensions) ? data.extensions : [];
     const availableExts = Array.isArray(data.available) ? data.available : [];
+    buildExtensionTabs(enabledExts);
     renderExtensions(enabledExts, availableExts);
-    mountExtensionPanels(els.extPanelsSection, els.extPanels, enabledExts, api);
+    selectTab(tabFromHash(), { updateHash: false });
     loadEntries();
     loadSettings();
     loadStatus();
@@ -831,7 +838,148 @@ els.settingsForm.addEventListener('submit', async (event) => {
   }
 });
 
-// ---- extensions ----
+// ---- tabs & extensions ----
+
+function tabFromHash() {
+  const raw = (location.hash || '').replace(/^#/, '');
+  if (!raw) return 'listings';
+  if (raw === 'listings' || raw === 'settings' || raw === 'extensions') return raw;
+  if (raw.startsWith('ext/')) {
+    const extId = raw.slice('ext/'.length);
+    if (document.getElementById(`tab-ext-${extId}`)) return `ext:${extId}`;
+  }
+  return 'listings';
+}
+
+function selectTab(tabId, { updateHash = true } = {}) {
+  const panelId = tabId.startsWith('ext:') ? `tab-ext-${tabId.slice(4)}` : `tab-${tabId}`;
+  const targetPanel = document.getElementById(panelId);
+  const resolvedTab = targetPanel ? tabId : 'listings';
+  const resolvedPanelId = targetPanel ? panelId : 'tab-listings';
+  state.activeTab = resolvedTab;
+
+  for (const btn of els.adminTabs.querySelectorAll('[role="tab"]')) {
+    btn.setAttribute('aria-selected', btn.dataset.tab === resolvedTab ? 'true' : 'false');
+  }
+  for (const panel of els.adminArea.querySelectorAll('[role="tabpanel"]')) {
+    panel.hidden = panel.id !== resolvedPanelId;
+  }
+
+  if (updateHash) {
+    const nextHash = resolvedTab.startsWith('ext:') ? `#ext/${resolvedTab.slice(4)}` : `#${resolvedTab}`;
+    if (location.hash !== nextHash) history.replaceState(null, '', nextHash);
+  }
+
+  const loader = state.extTabLoaders.get(resolvedTab);
+  if (loader) loader();
+}
+
+for (const btn of els.adminTabs.querySelectorAll('[role="tab"]')) {
+  btn.addEventListener('click', () => selectTab(btn.dataset.tab));
+}
+window.addEventListener('hashchange', () => {
+  if (state.signedIn) selectTab(tabFromHash(), { updateHash: false });
+});
+
+function buildExtensionInfoCard(ext) {
+  const card = element('section', 'panel admin-ext-api-card');
+  const h2 = element('h2', null, 'Extension API');
+  card.append(h2);
+
+  const box = element('div', 'admin-ext');
+  const head = element('div', 'admin-ext-head');
+  head.append(element('strong', null, ext.name || ext.id));
+  head.append(element('code', null, ext.id));
+  head.append(element('span', `admin-badge ${ext.loaded ? 'admin-badge-active' : 'admin-badge-blocked'}`, ext.loaded ? 'loaded' : 'not loaded'));
+  if (ext.loaded) {
+    const kind = ext.kind || 'headless';
+    head.append(element('span', `admin-badge admin-badge-kind-${kind}`, kindBadgeLabel(kind)));
+  }
+  box.append(head);
+
+  if (ext.loaded) {
+    box.append(
+      element('p', 'admin-sub', `Version ${ext.version || '?'} · API v${ext.apiVersion} · schema ${ext.schemaVersion}`)
+    );
+    const routes = Array.isArray(ext.routes) ? ext.routes : [];
+    const events = Array.isArray(ext.events) ? ext.events : [];
+    if (routes.length) {
+      box.append(element('p', 'admin-ext-label', 'Routes'));
+      const ul = element('ul', 'admin-ext-items');
+      for (const route of routes) {
+        const li = element('li');
+        li.append(element('code', null, `${route}`.replace(/^(\w+) /, `$1 /api/ext/${ext.id}/`)));
+        ul.append(li);
+      }
+      box.append(ul);
+    }
+    if (events.length) {
+      box.append(element('p', 'admin-ext-label', 'Events'));
+      const ul = element('ul', 'admin-ext-items');
+      for (const ev of events) {
+        const li = element('li');
+        li.append(element('code', null, ev));
+        ul.append(li);
+      }
+      box.append(ul);
+    }
+  }
+  if (ext.uiError) box.append(element('p', 'admin-error', `UI ignored: ${ext.uiError}`));
+  if (ext.error) box.append(element('p', 'admin-error', ext.error));
+  card.append(box);
+  return card;
+}
+
+function buildExtensionTabs(list) {
+  els.adminExtTabs.replaceChildren();
+  els.adminExtTabPanels.replaceChildren();
+  state.extTabLoaders.clear();
+  els.adminTabsDivider.hidden = list.length === 0;
+
+  for (const ext of list) {
+    const tabId = `ext:${ext.id}`;
+    const panelId = `tab-ext-${ext.id}`;
+
+    const tabBtn = element('button', 'admin-tab', ext.name || ext.id);
+    tabBtn.type = 'button';
+    tabBtn.setAttribute('role', 'tab');
+    tabBtn.dataset.tab = tabId;
+    tabBtn.setAttribute('aria-selected', 'false');
+    tabBtn.setAttribute('aria-controls', panelId);
+    tabBtn.addEventListener('click', () => selectTab(tabId));
+    els.adminExtTabs.append(tabBtn);
+
+    const tabPanel = element('div', 'layout admin-layout admin-tab-panel');
+    tabPanel.id = panelId;
+    tabPanel.setAttribute('role', 'tabpanel');
+    tabPanel.hidden = true;
+
+    const mainCol = element('section', 'admin-ext-tab-main');
+    const title = element('h2', 'section-title', ext.name || ext.id);
+    mainCol.append(title);
+
+    if (ext.loaded && Array.isArray(ext.panels) && ext.panels.length > 0) {
+      const slot = element('div');
+      mainCol.append(slot);
+      const { load } = mountSingleExtensionPanels(slot, ext, api, { deferLoad: true });
+      state.extTabLoaders.set(tabId, load);
+    } else if (!ext.loaded) {
+      const msg = element('section', 'panel');
+      msg.append(element('p', 'admin-error', ext.error || 'This extension failed to load.'));
+      mainCol.append(msg);
+    } else {
+      const msg = element('section', 'panel');
+      msg.append(element('p', 'hint', 'This extension is API-only and has no admin panels. Its routes and events are listed on the right.'));
+      mainCol.append(msg);
+    }
+
+    const sideCol = element('aside', 'sidebar admin-sidebar');
+    sideCol.append(buildExtensionInfoCard(ext));
+
+    tabPanel.append(mainCol, sideCol);
+    els.adminExtTabPanels.append(tabPanel);
+  }
+}
 
 function renderExtensions(list, available = []) {
   els.extList.replaceChildren();
@@ -852,33 +1000,16 @@ function renderExtensions(list, available = []) {
 
       if (ext.loaded) {
         box.append(
-          element('p', 'admin-sub', `Version ${ext.version || '?'} · API v${ext.apiVersion} · schema ${ext.schemaVersion}`)
+          element('p', 'admin-sub', `Version ${ext.version || '?'} · API v${ext.apiVersion} · schema ${ext.schemaVersion} · ${(ext.panels || []).length} panel(s) · ${(ext.routes || []).length} route(s)`)
         );
-        const routes = Array.isArray(ext.routes) ? ext.routes : [];
-        const events = Array.isArray(ext.events) ? ext.events : [];
-        if (routes.length) {
-          box.append(element('p', 'admin-ext-label', 'Routes'));
-          const ul = element('ul', 'admin-ext-items');
-          for (const route of routes) {
-            const li = element('li');
-            li.append(element('code', null, `${route}`.replace(/^(\w+) /, `$1 /api/ext/${ext.id}/`)));
-            ul.append(li);
-          }
-          box.append(ul);
-        }
-        if (events.length) {
-          box.append(element('p', 'admin-ext-label', 'Events'));
-          const ul = element('ul', 'admin-ext-items');
-          for (const ev of events) {
-            const li = element('li');
-            li.append(element('code', null, ev));
-            ul.append(li);
-          }
-          box.append(ul);
-        }
       }
       if (ext.uiError) box.append(element('p', 'admin-error', `UI ignored: ${ext.uiError}`));
       if (ext.error) box.append(element('p', 'admin-error', ext.error));
+
+      const openBtn = element('button', 'admin-button admin-button-sm', `Open ${ext.name || ext.id} tab`);
+      openBtn.type = 'button';
+      openBtn.addEventListener('click', () => selectTab(`ext:${ext.id}`));
+      box.append(openBtn);
       els.extList.append(box);
     }
   }

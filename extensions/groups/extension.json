@@ -1,0 +1,108 @@
+{
+  "id": "groups",
+  "name": "Working Groups",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "class": "WebringHub\\Ext\\Groups\\GroupsExtension",
+  "description": "Member working groups with opt-in membership, organiser approvals, #wg-<slug> scoped feeds and events, and member-only group polls.",
+  "author": "Webring Suite",
+  "homepage": "",
+  "reads": [
+    "webhook-sync",
+    "social"
+  ],
+  "routes": [
+    "GET v1/groups",
+    "POST v1/groups",
+    "GET v1/groups/{slug}",
+    "POST v1/groups/{slug}/join",
+    "POST v1/groups/{slug}/leave",
+    "POST v1/groups/{slug}/requests/{did}/approve",
+    "POST v1/groups/{slug}/polls",
+    "POST v1/groups/{slug}/polls/{id}/vote",
+    "GET v1/admin/groups",
+    "POST v1/admin/groups",
+    "POST v1/admin/groups/{id}/archive",
+    "DELETE v1/admin/groups/{id}"
+  ],
+  "events": [
+    "entry.removed",
+    "entry.status_changed",
+    "user.extension_opt_out"
+  ],
+  "tables": [
+    "groups",
+    "members",
+    "requests",
+    "polls",
+    "poll_options",
+    "poll_votes"
+  ],
+  "public": [
+    "/ext/groups/"
+  ],
+  "userData": {
+    "optInRequired": true,
+    "summary": "Stores your working group memberships, join requests, and group poll votes under your DID. Posts tagged #wg-<slug> stay on your own site."
+  },
+  "ui": {
+    "public": {
+      "title": "Working Groups",
+      "tagline": "Topic sub-groups with scoped feeds, events and polls",
+      "href": "/ext/groups/",
+      "cta": "Browse groups",
+      "accent": "violet"
+    },
+    "admin": {
+      "panels": [
+        {
+          "id": "groups-list",
+          "title": "Working groups",
+          "type": "table",
+          "source": "v1/admin/groups",
+          "itemsKey": "groups",
+          "emptyMessage": "No working groups yet.",
+          "columns": [
+            { "key": "title", "label": "Group" },
+            { "key": "slug", "label": "Tag", "as": "code" },
+            { "key": "visibility", "label": "Join", "as": "badge" },
+            { "key": "members", "label": "Members" },
+            { "key": "status", "label": "Status", "as": "badge" }
+          ],
+          "actions": [
+            {
+              "label": "Archive",
+              "method": "POST",
+              "path": "v1/admin/groups/{id}/archive",
+              "when": { "key": "status", "equals": "active" },
+              "confirm": "Archive this working group?"
+            },
+            {
+              "label": "Delete",
+              "method": "DELETE",
+              "path": "v1/admin/groups/{id}",
+              "style": "danger",
+              "confirm": "Delete this working group and all its memberships and polls?"
+            }
+          ]
+        },
+        {
+          "id": "groups-create",
+          "title": "Create working group",
+          "description": "Items tagged #wg-<slug> by group members automatically appear in the group's feed.",
+          "type": "form",
+          "method": "POST",
+          "path": "v1/admin/groups",
+          "submitLabel": "Create group",
+          "fields": [
+            { "name": "slug", "label": "Slug (e.g. hardware)", "placeholder": "hardware", "required": true },
+            { "name": "title", "label": "Title", "placeholder": "Hardware Builders", "required": true },
+            { "name": "description", "label": "Description", "placeholder": "Electronics, soldering and repairs" },
+            { "name": "organizerDid", "label": "Organiser DID", "placeholder": "did:web:alice.example", "required": true },
+            { "name": "visibility", "label": "Visibility (open or request)", "placeholder": "open" }
+          ]
+        }
+      ]
+    }
+  }
+}

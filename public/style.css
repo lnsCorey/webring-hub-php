@@ -2093,3 +2093,188 @@ pre code {
 .mydata-info .hint {
   margin: 0;
 }
+
+/* ---- Admin horizontal tabs ---- */
+
+.admin-area {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.admin-area[hidden] {
+  display: none;
+}
+
+.admin-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.admin-ext-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-tabs-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border-strong);
+  margin: 0 4px;
+  flex: none;
+}
+
+.admin-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.admin-tab:hover {
+  color: var(--text-bright);
+  background: var(--surface-2);
+}
+
+.admin-tab[aria-selected='true'] {
+  color: var(--text-bright);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.admin-tab-panel[hidden] {
+  display: none;
+}
+
+.admin-settings-panel {
+  max-width: 720px;
+}
+
+.admin-ext-tab-main .section-title {
+  margin-top: 0;
+}
+
+.admin-ext-api-card .admin-ext {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* ---- Home page horizontal tabs ---- */
+
+.hub-home-main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 20px;
+  padding-bottom: 40px;
+}
+
+.hub-home-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.hub-home-tabs-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border-strong);
+  margin: 0 4px;
+  flex: none;
+}
+
+.hub-ext-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hub-home-tab {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.hub-home-tab:hover {
+  color: var(--text-bright);
+  background: var(--surface-2);
+}
+
+.hub-home-tab[aria-selected='true'] {
+  color: var(--text-bright);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.hub-ext-tab:hover {
+  border-color: var(--ext-accent-border, var(--accent-border));
+  background: var(--ext-accent-soft, var(--accent-soft));
+}
+
+.hub-ext-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ext-accent, var(--accent));
+  flex: none;
+}
+
+.hub-home-panel[hidden] {
+  display: none;
+}
+
+.hub-join-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.hub-join-side {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+@media (max-width: 780px) {
+  .hub-join-grid {
+    grid-template-columns: 1fr;
+  }
+}
