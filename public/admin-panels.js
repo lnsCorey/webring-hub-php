@@ -265,6 +265,163 @@ function materializeTree(node, handlers) {
 }
 
 /**
+ * Mounts declarative panels for a single extension into `containerEl`.
+ * When `deferLoad` is true, panels render only when the returned `load()` function is called.
+ */
+export function mountSingleExtensionPanels(containerEl, ext, api, { deferLoad = false } = {}) {
+  if (!containerEl) return { load: async () => {} };
+  containerEl.replaceChildren();
+
+  const panels = ext && ext.loaded && Array.isArray(ext.panels) ? ext.panels : [];
+  if (panels.length === 0) {
+    return { load: async () => {} };
+  }
+
+  const panelGrid = document.createElement('div');
+  panelGrid.className = 'admin-ext-panel-stack';
+  containerEl.append(panelGrid);
+
+  const refreshers = [];
+  const loaders = [];
+
+  for (const panel of panels) {
+    const card = document.createElement('section');
+    card.className = 'panel admin-ext-panel';
+
+    const head = document.createElement('div');
+    head.className = 'admin-ext-panel-head';
+    const h3 = document.createElement('h3');
+    h3.textContent = panel.title;
+    head.append(h3);
+
+    const statusMsg = document.createElement('p');
+    statusMsg.className = 'form-message';
+    statusMsg.setAttribute('role', 'status');
+    statusMsg.setAttribute('aria-live', 'polite');
+
+    const bodySlot = document.createElement('div');
+
+    const setPanelMsg = (text, kind = '') => {
+      statusMsg.textContent = text || '';
+      statusMsg.className = `form-message${kind ? ` ${kind}` : ''}`;
+    };
+
+    const renderBody = (data, st = {}) => {
+      const tree = buildPanelTree(ext.id, panel, data, st);
+      bodySlot.replaceChildren(
+        materializeTree(tree, {
+          onRowAction: async (meta, btn) => {
+            const { action, resolvedPath } = meta;
+            if (action.confirm && !window.confirm(action.confirm)) {
+              return;
+            }
+            btn.disabled = true;
+            setPanelMsg('Working…');
+            try {
+              const res = await api(resolvedPath, {
+                method: action.method,
+                body: action.body !== null && action.body !== undefined ? action.body : undefined,
+              });
+              const msg = (res && typeof res.message === 'string' && res.message) || `${action.label}: done.`;
+              setPanelMsg(msg, 'success');
+              await Promise.all(refreshers.map((fn) => fn()));
+            } catch (err) {
+              setPanelMsg(err.message || 'The action failed.', 'error');
+            } finally {
+              btn.disabled = false;
+            }
+          },
+          onFormSubmit: async (formPanel, formEl) => {
+            const formData = new FormData(formEl);
+            const values = {};
+            for (const f of formPanel.fields || []) {
+              values[f.name] = String(formData.get(f.name) || '').trim();
+            }
+            if (formPanel.confirm && !window.confirm(formPanel.confirm)) {
+              return;
+            }
+            const submitBtn = formEl.querySelector('button[type="submit"]');
+            if (submitBtn) submitBtn.disabled = true;
+            setPanelMsg('Submitting…');
+            try {
+              const resolvedPath = interpolateActionPath(ext.id, formPanel.path, values);
+              // Any fields not consumed by `{param}` in the path are sent as the JSON body
+              const body = {};
+              for (const [k, v] of Object.entries(values)) {
+                if (!formPanel.path.includes(`{${k}}`)) {
+                  body[k] = v;
+                }
+              }
+              const sendBody = Object.keys(body).length > 0 || formPanel.method === 'POST' ? body : undefined;
+              const res = await api(resolvedPath, { method: formPanel.method, body: sendBody });
+              const msg = (res && typeof res.message === 'string' && res.message) || 'Completed.';
+              setPanelMsg(msg, 'success');
+              formEl.reset();
+              await Promise.all(refreshers.map((fn) => fn()));
+            } catch (err) {
+              setPanelMsg(err.message || 'Request failed.', 'error');
+            } finally {
+              if (submitBtn) submitBtn.disabled = false;
+            }
+          },
+        })
+      );
+    };
+
+    const loadPanelData = async () => {
+      if (panel.type === 'form') {
+        renderBody(null, {});
+        return;
+      }
+      renderBody(null, { loading: true });
+      try {
+        const url = `/api/ext/${encodeURIComponent(ext.id)}/${panel.source}`;
+        const data = await api(url);
+        renderBody(data, {});
+      } catch (err) {
+        renderBody(null, { error: err.message || 'Could not load panel data.' });
+      }
+    };
+
+    if (panel.type === 'stats' || panel.type === 'table') {
+      const refreshBtn = document.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'admin-button admin-button-sm';
+      refreshBtn.textContent = 'Refresh';
+      refreshBtn.addEventListener('click', () => {
+        setPanelMsg('');
+        loadPanelData();
+      });
+      head.append(refreshBtn);
+      refreshers.push(loadPanelData);
+    }
+
+    card.append(head);
+    if (panel.description) {
+      const desc = document.createElement('p');
+      desc.className = 'admin-sub';
+      desc.textContent = panel.description;
+      card.append(desc);
+    }
+    card.append(bodySlot, statusMsg);
+    panelGrid.append(card);
+    loaders.push(loadPanelData);
+  }
+
+  let loaded = false;
+  const load = async () => {
+    if (loaded) return;
+    loaded = true;
+    await Promise.all(loaders.map((fn) => fn()));
+  };
+
+  if (!deferLoad) {
+    load();
+  }
+  return { load };
+}
+
+/**
  * Mounts collapsible panel groups for all enabled extensions that declare `panels`.
  */
 export function mountExtensionPanels(sectionEl, containerEl, extensions, api) {
@@ -296,136 +453,9 @@ export function mountExtensionPanels(sectionEl, containerEl, extensions, api) {
     summary.append(titleSpan, ' ', idCode);
     details.append(summary);
 
-    const panelGrid = document.createElement('div');
-    panelGrid.className = 'admin-ext-panel-stack';
-    details.append(panelGrid);
-
-    const refreshers = [];
-
-    for (const panel of ext.panels) {
-      const card = document.createElement('section');
-      card.className = 'admin-ext-panel';
-
-      const head = document.createElement('div');
-      head.className = 'admin-ext-panel-head';
-      const h3 = document.createElement('h3');
-      h3.textContent = panel.title;
-      head.append(h3);
-
-      const statusMsg = document.createElement('p');
-      statusMsg.className = 'form-message';
-      statusMsg.setAttribute('role', 'status');
-      statusMsg.setAttribute('aria-live', 'polite');
-
-      const bodySlot = document.createElement('div');
-
-      const setPanelMsg = (text, kind = '') => {
-        statusMsg.textContent = text || '';
-        statusMsg.className = `form-message${kind ? ` ${kind}` : ''}`;
-      };
-
-      const renderBody = (data, st = {}) => {
-        const tree = buildPanelTree(ext.id, panel, data, st);
-        bodySlot.replaceChildren(
-          materializeTree(tree, {
-            onRowAction: async (meta, btn) => {
-              const { action, resolvedPath } = meta;
-              if (action.confirm && !window.confirm(action.confirm)) {
-                return;
-              }
-              btn.disabled = true;
-              setPanelMsg('Working…');
-              try {
-                const res = await api(resolvedPath, {
-                  method: action.method,
-                  body: action.body !== null && action.body !== undefined ? action.body : undefined,
-                });
-                const msg = (res && typeof res.message === 'string' && res.message) || `${action.label}: done.`;
-                setPanelMsg(msg, 'success');
-                await loadPanelData();
-              } catch (err) {
-                setPanelMsg(err.message || 'The action failed.', 'error');
-              } finally {
-                btn.disabled = false;
-              }
-            },
-            onFormSubmit: async (formPanel, formEl) => {
-              const formData = new FormData(formEl);
-              const values = {};
-              for (const f of formPanel.fields || []) {
-                values[f.name] = String(formData.get(f.name) || '').trim();
-              }
-              if (formPanel.confirm && !window.confirm(formPanel.confirm)) {
-                return;
-              }
-              const submitBtn = formEl.querySelector('button[type="submit"]');
-              if (submitBtn) submitBtn.disabled = true;
-              setPanelMsg('Submitting…');
-              try {
-                const resolvedPath = interpolateActionPath(ext.id, formPanel.path, values);
-                // Any fields not consumed by `{param}` in the path are sent as the JSON body
-                const body = {};
-                for (const [k, v] of Object.entries(values)) {
-                  if (!formPanel.path.includes(`{${k}}`)) {
-                    body[k] = v;
-                  }
-                }
-                const sendBody = Object.keys(body).length > 0 || formPanel.method === 'POST' ? body : undefined;
-                const res = await api(resolvedPath, { method: formPanel.method, body: sendBody });
-                const msg = (res && typeof res.message === 'string' && res.message) || 'Completed.';
-                setPanelMsg(msg, 'success');
-                formEl.reset();
-                await Promise.all(refreshers.map((fn) => fn()));
-              } catch (err) {
-                setPanelMsg(err.message || 'Request failed.', 'error');
-              } finally {
-                if (submitBtn) submitBtn.disabled = false;
-              }
-            },
-          })
-        );
-      };
-
-      const loadPanelData = async () => {
-        if (panel.type === 'form') {
-          renderBody(null, {});
-          return;
-        }
-        renderBody(null, { loading: true });
-        try {
-          const url = `/api/ext/${encodeURIComponent(ext.id)}/${panel.source}`;
-          const data = await api(url);
-          renderBody(data, {});
-        } catch (err) {
-          renderBody(null, { error: err.message || 'Could not load panel data.' });
-        }
-      };
-
-      if (panel.type === 'stats' || panel.type === 'table') {
-        const refreshBtn = document.createElement('button');
-        refreshBtn.type = 'button';
-        refreshBtn.className = 'admin-button admin-button-sm';
-        refreshBtn.textContent = 'Refresh';
-        refreshBtn.addEventListener('click', () => {
-          setPanelMsg('');
-          loadPanelData();
-        });
-        head.append(refreshBtn);
-        refreshers.push(loadPanelData);
-      }
-
-      card.append(head);
-      if (panel.description) {
-        const desc = document.createElement('p');
-        desc.className = 'admin-sub';
-        desc.textContent = panel.description;
-        card.append(desc);
-      }
-      card.append(bodySlot, statusMsg);
-      panelGrid.append(card);
-
-      loadPanelData();
-    }
+    const slot = document.createElement('div');
+    details.append(slot);
+    mountSingleExtensionPanels(slot, ext, api);
 
     containerEl.append(details);
   }

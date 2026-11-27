@@ -90,86 +90,93 @@
         </form>
       </dialog>
 
-      <div id="admin-area" class="layout admin-layout" hidden>
-        <section class="admin-listings" aria-labelledby="listings-heading">
-          <h2 id="listings-heading" class="section-title">
-            Listings <span id="list-count" class="count"></span>
-          </h2>
+      <div id="admin-area" class="admin-area" hidden>
+        <nav id="admin-tabs" class="admin-tabs" role="tablist" aria-label="Admin sections">
+          <button type="button" class="admin-tab" role="tab" data-tab="listings" aria-selected="true" aria-controls="tab-listings">Listings</button>
+          <button type="button" class="admin-tab" role="tab" data-tab="settings" aria-selected="false" aria-controls="tab-settings">Instance settings</button>
+          <button type="button" class="admin-tab" role="tab" data-tab="extensions" aria-selected="false" aria-controls="tab-extensions">Extensions</button>
+          <span id="admin-tabs-divider" class="admin-tabs-divider" hidden aria-hidden="true"></span>
+          <span id="admin-ext-tabs" class="admin-ext-tabs"></span>
+        </nav>
 
-          <form id="filter-form" class="admin-filters" role="search">
-            <div class="admin-field">
-              <label for="filter-status">Status</label>
-              <select id="filter-status" name="status">
-                <option value="">All</option>
-                <option value="active">Active</option>
-                <option value="blocked">Blocked</option>
-                <option value="stale">Stale</option>
-              </select>
-            </div>
-            <div class="admin-field admin-field-grow">
-              <label for="filter-q">Search</label>
-              <input id="filter-q" name="q" type="search" placeholder="Name, handle, site URL or DID" autocomplete="off" spellcheck="false" />
-            </div>
-            <button type="submit" class="admin-button">Apply</button>
-          </form>
+        <div id="tab-listings" class="layout admin-layout admin-tab-panel" role="tabpanel">
+          <section class="admin-listings" aria-labelledby="listings-heading">
+            <h2 id="listings-heading" class="section-title">
+              Listings <span id="list-count" class="count"></span>
+            </h2>
 
-          <p id="list-status" class="form-message" role="status" aria-live="polite"></p>
-
-          <div class="admin-table-wrap">
-            <table class="admin-table">
-              <thead>
-                <tr>
-                  <th scope="col">Site</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Last verified</th>
-                  <th scope="col">Checks</th>
-                  <th scope="col">Key</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="entries-body"></tbody>
-            </table>
-          </div>
-          <p id="list-empty" class="empty" hidden>No listings match.</p>
-
-          <nav class="admin-pager" aria-label="Pages">
-            <button id="page-prev" class="admin-button" type="button" disabled>Previous</button>
-            <span id="page-info" class="admin-page-info"></span>
-            <button id="page-next" class="admin-button" type="button" disabled>Next</button>
-          </nav>
-
-          <section id="ext-panels-section" class="admin-ext-panels" aria-labelledby="ext-panels-heading" hidden>
-            <h2 id="ext-panels-heading" class="section-title">Extension panels</h2>
-            <div id="ext-panels"></div>
-          </section>
-        </section>
-
-        <aside class="sidebar admin-sidebar">
-          <section class="panel" aria-labelledby="add-heading">
-            <h2 id="add-heading">Add a site</h2>
-            <p>Fetches the site's signed profile, verifies it and lists it (or refreshes it if it is already listed).</p>
-            <form id="add-form">
-              <label for="add-url">Site URL</label>
-              <input id="add-url" name="siteUrl" type="url" placeholder="https://someone.example" required />
-              <button type="submit">Add site</button>
+            <form id="filter-form" class="admin-filters" role="search">
+              <div class="admin-field">
+                <label for="filter-status">Status</label>
+                <select id="filter-status" name="status">
+                  <option value="">All</option>
+                  <option value="active">Active</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="stale">Stale</option>
+                </select>
+              </div>
+              <div class="admin-field admin-field-grow">
+                <label for="filter-q">Search</label>
+                <input id="filter-q" name="q" type="search" placeholder="Name, handle, site URL or DID" autocomplete="off" spellcheck="false" />
+              </div>
+              <button type="submit" class="admin-button">Apply</button>
             </form>
-            <p id="add-message" class="form-message" role="status" aria-live="polite"></p>
+
+            <p id="list-status" class="form-message" role="status" aria-live="polite"></p>
+
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Site</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Last verified</th>
+                    <th scope="col">Checks</th>
+                    <th scope="col">Key</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="entries-body"></tbody>
+              </table>
+            </div>
+            <p id="list-empty" class="empty" hidden>No listings match.</p>
+
+            <nav class="admin-pager" aria-label="Pages">
+              <button id="page-prev" class="admin-button" type="button" disabled>Previous</button>
+              <span id="page-info" class="admin-page-info"></span>
+              <button id="page-next" class="admin-button" type="button" disabled>Next</button>
+            </nav>
           </section>
 
-          <section class="panel" aria-labelledby="recheck-heading">
-            <h2 id="recheck-heading">Re-check due sites</h2>
-            <p>
-              Re-verifies the sites checked longest ago (never blocked ones). A site that fails 7
-              checks in a row is marked stale. The cron job does the same for every site.
-            </p>
-            <form id="recheck-form">
-              <label for="recheck-limit">How many (1–25)</label>
-              <input id="recheck-limit" name="limit" type="number" min="1" max="25" value="10" required />
-              <button type="submit">Re-check</button>
-            </form>
-            <p id="recheck-message" class="form-message" role="status" aria-live="polite"></p>
-          </section>
+          <aside class="sidebar admin-sidebar">
+            <section class="panel" aria-labelledby="add-heading">
+              <h2 id="add-heading">Add a site</h2>
+              <p>Fetches the site's signed profile, verifies it and lists it (or refreshes it if it is already listed).</p>
+              <form id="add-form">
+                <label for="add-url">Site URL</label>
+                <input id="add-url" name="siteUrl" type="url" placeholder="https://someone.example" required />
+                <button type="submit">Add site</button>
+              </form>
+              <p id="add-message" class="form-message" role="status" aria-live="polite"></p>
+            </section>
 
+            <section class="panel" aria-labelledby="recheck-heading">
+              <h2 id="recheck-heading">Re-check due sites</h2>
+              <p>
+                Re-verifies the sites checked longest ago (never blocked ones). A site that fails 7
+                checks in a row is marked stale. The cron job does the same for every site.
+              </p>
+              <form id="recheck-form">
+                <label for="recheck-limit">How many (1–25)</label>
+                <input id="recheck-limit" name="limit" type="number" min="1" max="25" value="10" required />
+                <button type="submit">Re-check</button>
+              </form>
+              <p id="recheck-message" class="form-message" role="status" aria-live="polite"></p>
+            </section>
+          </aside>
+        </div>
+
+        <div id="tab-settings" class="admin-tab-panel admin-settings-panel" role="tabpanel" hidden>
           <section class="panel" aria-labelledby="settings-heading">
             <h2 id="settings-heading">Instance settings</h2>
             <p>Only fields you change are saved. Clearing the title or description restores the default from <code>config.php</code>.</p>
@@ -197,14 +204,19 @@
             <p id="settings-message" class="form-message" role="status" aria-live="polite"></p>
             <p class="hint">Maintainer fields are only shown publicly (and only prefilled here) while the badge is on.</p>
           </section>
+        </div>
 
+        <div id="tab-extensions" class="admin-tab-panel" role="tabpanel" hidden>
           <section class="panel" aria-labelledby="ext-heading">
             <h2 id="ext-heading">Extensions</h2>
+            <p class="hint">Select an extension's tab above to manage its panels and inspect its API routes and events.</p>
             <div id="ext-list" class="admin-ext-list"></div>
             <p id="ext-message" class="form-message" role="status" aria-live="polite"></p>
             <p class="hint">Turn extensions on with <code>HUB_EXTENSIONS</code> or <code>'extensions'</code> in <code>config.php</code>.</p>
           </section>
-        </aside>
+        </div>
+
+        <div id="admin-ext-tab-panels"></div>
       </div>
     </main>
 

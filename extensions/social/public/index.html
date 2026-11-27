@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/style.css" />
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=2" />
     <script src="/theme.js"></script>
   </head>
   <body class="social-page">
@@ -49,7 +49,11 @@
       <div id="social-notice" class="social-notice" hidden></div>
 
       <nav class="social-tabs" aria-label="Conversations views">
-        <a class="social-tab" href="#feed" data-tab="feed">Feed</a>
+        <a class="social-tab" href="#feed" data-tab="feed">Daily Feed</a>
+        <a class="social-tab" href="#people" data-tab="people">People</a>
+        <a class="social-tab" href="#library" data-tab="library">Library</a>
+        <a class="social-tab" href="#now" data-tab="now">Now</a>
+        <a class="social-tab" href="#challenges" data-tab="challenges">Challenges</a>
         <a class="social-tab" href="#events" data-tab="events">Events</a>
         <a class="social-tab" href="#board" data-tab="board">Asks &amp; offers</a>
         <a class="social-tab" href="#polls" data-tab="polls">Polls</a>
@@ -58,6 +62,29 @@
       </nav>
 
       <section id="view-feed" class="social-view" aria-live="polite">
+        <form id="feed-daily-bar" class="panel social-daily-bar" role="search" aria-label="Filter Daily Feed by day, time and keywords">
+          <div class="social-daily-group">
+            <button id="feed-day-prev" class="hub-btn" type="button" aria-label="Previous day">‹</button>
+            <label class="sr-only" for="feed-date">Day</label>
+            <input id="feed-date" class="social-input social-date-input" type="date" />
+            <button id="feed-day-next" class="hub-btn" type="button" aria-label="Next day">›</button>
+            <button id="feed-day-today" class="hub-btn" type="button">Today</button>
+          </div>
+          <div class="social-daily-group">
+            <label class="social-daily-label" for="feed-time-from">Time</label>
+            <input id="feed-time-from" class="social-input social-time-input" type="time" aria-label="From time" />
+            <span class="hint">–</span>
+            <input id="feed-time-to" class="social-input social-time-input" type="time" aria-label="To time" />
+          </div>
+          <div class="social-daily-group social-daily-search">
+            <label class="sr-only" for="feed-search">Search posts</label>
+            <input id="feed-search" class="social-input" type="search" maxlength="100" placeholder="Search posts, people, tags…" autocomplete="off" />
+            <button id="feed-filter-reset" class="hub-btn" type="button" hidden>Reset</button>
+          </div>
+        </form>
+        <div id="feed-challenge-banner" class="panel social-challenge-banner" hidden></div>
+        <div id="feed-belonging" class="social-belonging" hidden></div>
+        <div id="channel-picker" class="social-channel-picker" hidden></div>
         <div class="social-filter" role="group" aria-label="Filter by type">
           <button type="button" class="hub-btn" data-type="" aria-pressed="true">All</button>
           <button type="button" class="hub-btn" data-type="post" aria-pressed="false">Posts</button>
@@ -67,6 +94,39 @@
         <div id="feed-list" class="social-list"></div>
         <p id="feed-status" class="hint social-status"></p>
         <button id="feed-more" class="hub-btn social-more" type="button" hidden>Load more</button>
+      </section>
+
+      <section id="view-people" class="social-view" hidden>
+        <div id="people-my-controls" class="panel social-my-controls" hidden>
+          <label class="social-check"><input id="pref-guestbook" type="checkbox" /> Turn on my guestbook</label>
+          <a id="pref-guestbook-csv" class="hub-btn social-subscribe" href="../../api/ext/social/v1/me/guestbook.csv" hidden>⬇ Export guestbook CSV</a>
+          <label class="social-check"><input id="pref-hide-vouches" type="checkbox" /> Hide vouches about me</label>
+        </div>
+        <div id="people-list" class="social-people-grid"></div>
+        <p id="people-status" class="hint social-status"></p>
+        <p class="hint social-reply-hint">
+          Vouch for someone from Webring Studio: compose a post and choose <strong>Vouch</strong>. Deleting the post revokes the vouch.
+        </p>
+      </section>
+
+      <section id="view-library" class="social-view" hidden>
+        <div class="social-toolbar">
+          <a id="library-post-btn" class="hub-btn" href="webring://interact?action=recommendation&amp;location=Community%20Library" title="Open Webring Studio to recommend or share a link to the Community Library">＋ Post to Library</a>
+        </div>
+        <div id="library-list" class="social-list"></div>
+        <p id="library-status" class="hint social-status"></p>
+        <p class="hint social-reply-hint">Links come from members' <strong>share</strong> and <strong>recommendation</strong> items. Upvote your favourites to build the weekly reading list.</p>
+      </section>
+
+      <section id="view-now" class="social-view" hidden>
+        <div id="now-list" class="social-people-grid"></div>
+        <p id="now-status" class="hint social-status"></p>
+        <p class="hint social-reply-hint">Update your <strong>Now Status</strong> in Webring Studio's Profile tab and publish. Statuses expire after 30 days.</p>
+      </section>
+
+      <section id="view-challenges" class="social-view" hidden>
+        <div id="challenges-list" class="social-list"></div>
+        <p id="challenges-status" class="hint social-status"></p>
       </section>
 
       <section id="view-thread" class="social-view" hidden>
@@ -188,6 +248,31 @@
       </form>
     </dialog>
 
+    <dialog id="vouches-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="vouches-title">
+      <h2 id="vouches-title">Vouches</h2>
+      <div id="vouches-body" class="social-dialog-body"></div>
+      <div class="hub-dialog-actions">
+        <button id="vouches-close" class="hub-btn" type="button">Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="guestbook-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="guestbook-title">
+      <h2 id="guestbook-title">Guestbook</h2>
+      <form id="guestbook-form" class="social-gb-form" hidden>
+        <label class="social-label" for="guestbook-input">Leave a note (plain text, up to 280 characters)</label>
+        <textarea id="guestbook-input" class="social-input" maxlength="280" rows="3" required placeholder="Thanks for sharing your site!"></textarea>
+        <p id="guestbook-form-status" class="form-message" role="status" aria-live="polite"></p>
+        <div class="hub-dialog-actions">
+          <button id="guestbook-submit" class="hub-btn" type="submit">Sign guestbook</button>
+        </div>
+      </form>
+      <div id="guestbook-list" class="social-list"></div>
+      <p id="guestbook-status" class="hint social-status"></p>
+      <div class="hub-dialog-actions">
+        <button id="guestbook-close" class="hub-btn" type="button">Close</button>
+      </div>
+    </dialog>
+
     <dialog id="auth-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="auth-dialog-title">
       <h2 id="auth-dialog-title">Sign in with Webring Studio</h2>
       <p class="hint">
@@ -217,6 +302,6 @@
     </dialog>
 
     <script type="module" src="/hub-auth.js"></script>
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=4"></script>
   </body>
 </html>

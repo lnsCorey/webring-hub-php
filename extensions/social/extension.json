@@ -1,10 +1,10 @@
 {
   "id": "social",
   "name": "Conversations & Reactions",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "apiVersion": 1,
   "class": "WebringHub\\Ext\\Social\\SocialExtension",
-  "description": "Threads built from members' signed comments, reactions, moderation and activity, plus events with RSVPs, polls, an asks & offers board and a weekly digest.",
+  "description": "Threads built from members' signed comments, reactions, moderation and activity, plus events, polls, asks & offers, weekly digest, vouches, welcome wall, roles & badges, guestbooks, topic channels, shared library, Now wall and challenges.",
   "author": "Webring Suite",
   "homepage": "",
   "reads": [
@@ -37,7 +37,42 @@
     "GET v1/admin/polls",
     "POST v1/admin/polls",
     "POST v1/admin/polls/{id}/close",
-    "DELETE v1/admin/polls/{id}"
+    "DELETE v1/admin/polls/{id}",
+    "GET v1/people",
+    "GET v1/members/vouches",
+    "GET v1/vouches/recent",
+    "GET v1/me/vouch-prefs",
+    "POST v1/me/vouch-prefs",
+    "GET v1/welcome",
+    "POST v1/greetings",
+    "GET v1/spotlight",
+    "GET v1/admin/roles",
+    "POST v1/admin/roles",
+    "DELETE v1/admin/roles/{id}",
+    "POST v1/admin/badges/recompute",
+    "GET v1/guestbook",
+    "POST v1/guestbook",
+    "DELETE v1/guestbook/{id}",
+    "POST v1/guestbook/{id}/report",
+    "POST v1/me/guestbook",
+    "GET v1/me/guestbook.csv",
+    "GET v1/admin/guestbook/reports",
+    "GET v1/admin/guestbook/hidden",
+    "POST v1/admin/guestbook/reports/{id}/hide",
+    "POST v1/admin/guestbook/reports/{id}/dismiss",
+    "POST v1/admin/guestbook/hidden/{id}/restore",
+    "GET v1/channels",
+    "GET v1/me/follows",
+    "POST v1/follows",
+    "GET v1/library",
+    "POST v1/library/vote",
+    "GET v1/now",
+    "GET v1/challenges",
+    "GET v1/challenges/{id}",
+    "GET v1/admin/challenges",
+    "POST v1/admin/challenges",
+    "POST v1/admin/challenges/{id}/close",
+    "DELETE v1/admin/challenges/{id}"
   ],
   "events": [
     "entry.removed",
@@ -58,19 +93,31 @@
     "listings",
     "polls",
     "poll_options",
-    "poll_votes"
+    "poll_votes",
+    "vouches",
+    "vouch_prefs",
+    "greetings",
+    "roles",
+    "badges",
+    "guestbooks",
+    "guestbook_entries",
+    "guestbook_reports",
+    "item_tags",
+    "follows",
+    "pick_votes",
+    "challenges"
   ],
   "public": [
     "/ext/social/"
   ],
   "userData": {
     "optInRequired": true,
-    "summary": "Stores your reactions, RSVPs, poll votes, the polls and reports you create, and when you last read your activity, under your DID. Your posts, events and asks/offers stay on your own site."
+    "summary": "Stores your reactions, RSVPs, poll votes, polls and reports you create, welcome greetings, vouch-visibility preference, your opt-in guestbook and entries you sign, and when you last read your activity, under your DID. Your posts, events, asks/offers and vouches stay on your own site. Admin-assigned roles and earned badges are part of the hub's record and are removed only if your entry is removed or blocked."
   },
   "ui": {
     "public": {
       "title": "Conversations",
-      "tagline": "Threads, events, polls and asks & offers between members",
+      "tagline": "Threads, events, polls, asks & offers, vouches, welcomes and guestbooks",
       "href": "/ext/social/",
       "cta": "Join the conversation",
       "art": "card.svg",
@@ -111,32 +158,12 @@
           "itemsKey": "reports",
           "emptyMessage": "No open reports.",
           "columns": [
-            {
-              "key": "author",
-              "label": "Author"
-            },
-            {
-              "key": "excerpt",
-              "label": "Item"
-            },
-            {
-              "key": "reasons",
-              "label": "Reasons"
-            },
-            {
-              "key": "reportCount",
-              "label": "Reports"
-            },
-            {
-              "key": "visibility",
-              "label": "Now",
-              "as": "badge"
-            },
-            {
-              "key": "firstReported",
-              "label": "First reported",
-              "as": "time"
-            }
+            { "key": "author", "label": "Author" },
+            { "key": "excerpt", "label": "Item" },
+            { "key": "reasons", "label": "Reasons" },
+            { "key": "reportCount", "label": "Reports" },
+            { "key": "visibility", "label": "Now", "as": "badge" },
+            { "key": "firstReported", "label": "First reported", "as": "time" }
           ],
           "actions": [
             {
@@ -162,24 +189,10 @@
           "itemsKey": "hidden",
           "emptyMessage": "Nothing is hidden.",
           "columns": [
-            {
-              "key": "author",
-              "label": "Author"
-            },
-            {
-              "key": "excerpt",
-              "label": "Item"
-            },
-            {
-              "key": "reason",
-              "label": "Hidden by",
-              "as": "badge"
-            },
-            {
-              "key": "hiddenAt",
-              "label": "Hidden",
-              "as": "time"
-            }
+            { "key": "author", "label": "Author" },
+            { "key": "excerpt", "label": "Item" },
+            { "key": "reason", "label": "Hidden by", "as": "badge" },
+            { "key": "hiddenAt", "label": "Hidden", "as": "time" }
           ],
           "actions": [
             {
@@ -191,6 +204,104 @@
           ]
         },
         {
+          "id": "social-roles",
+          "title": "Member roles",
+          "description": "Role labels shown next to a member's name (organizer, moderator, plus up to 5 custom roles configured in extension settings).",
+          "type": "table",
+          "source": "v1/admin/roles",
+          "itemsKey": "roles",
+          "emptyMessage": "No roles assigned yet.",
+          "columns": [
+            { "key": "member", "label": "Member" },
+            { "key": "did", "label": "DID" },
+            { "key": "role", "label": "Role", "as": "badge" },
+            { "key": "assignedAt", "label": "Assigned", "as": "time" }
+          ],
+          "actions": [
+            {
+              "label": "Remove",
+              "method": "DELETE",
+              "path": "v1/admin/roles/{id}",
+              "style": "danger",
+              "confirm": "Remove this role from the member?"
+            }
+          ]
+        },
+        {
+          "id": "social-assign-role",
+          "title": "Assign role",
+          "type": "form",
+          "method": "POST",
+          "path": "v1/admin/roles",
+          "submitLabel": "Assign role",
+          "fields": [
+            {
+              "name": "did",
+              "label": "Member DID",
+              "placeholder": "did:web:alice.example",
+              "required": true
+            },
+            {
+              "name": "role",
+              "label": "Role",
+              "placeholder": "organizer",
+              "required": true
+            }
+          ]
+        },
+        {
+          "id": "social-gb-reports",
+          "title": "Open guestbook reports",
+          "type": "table",
+          "source": "v1/admin/guestbook/reports?status=open",
+          "itemsKey": "reports",
+          "emptyMessage": "No open guestbook reports.",
+          "columns": [
+            { "key": "author", "label": "Author" },
+            { "key": "excerpt", "label": "Entry" },
+            { "key": "reasons", "label": "Reasons" },
+            { "key": "reportCount", "label": "Reports" },
+            { "key": "visibility", "label": "Now", "as": "badge" },
+            { "key": "firstReported", "label": "First reported", "as": "time" }
+          ],
+          "actions": [
+            {
+              "label": "Hide",
+              "method": "POST",
+              "path": "v1/admin/guestbook/reports/{id}/hide",
+              "confirm": "Hide this guestbook entry?",
+              "style": "danger"
+            },
+            {
+              "label": "Dismiss",
+              "method": "POST",
+              "path": "v1/admin/guestbook/reports/{id}/dismiss",
+              "confirm": "Dismiss these reports and unhide the entry?"
+            }
+          ]
+        },
+        {
+          "id": "social-gb-hidden",
+          "title": "Hidden guestbook entries",
+          "type": "table",
+          "source": "v1/admin/guestbook/hidden",
+          "itemsKey": "hidden",
+          "emptyMessage": "No hidden guestbook entries.",
+          "columns": [
+            { "key": "author", "label": "Author" },
+            { "key": "excerpt", "label": "Entry" },
+            { "key": "createdAt", "label": "Written", "as": "time" }
+          ],
+          "actions": [
+            {
+              "label": "Restore",
+              "method": "POST",
+              "path": "v1/admin/guestbook/hidden/{id}/restore",
+              "confirm": "Restore this guestbook entry?"
+            }
+          ]
+        },
+        {
           "id": "social-polls",
           "title": "Polls",
           "type": "table",
@@ -198,38 +309,18 @@
           "itemsKey": "polls",
           "emptyMessage": "No polls yet.",
           "columns": [
-            {
-              "key": "question",
-              "label": "Question"
-            },
-            {
-              "key": "createdBy",
-              "label": "Created by"
-            },
-            {
-              "key": "status",
-              "label": "Status",
-              "as": "badge"
-            },
-            {
-              "key": "voters",
-              "label": "Voters"
-            },
-            {
-              "key": "closesAt",
-              "label": "Closes",
-              "as": "time"
-            }
+            { "key": "question", "label": "Question" },
+            { "key": "createdBy", "label": "Created by" },
+            { "key": "status", "label": "Status", "as": "badge" },
+            { "key": "voters", "label": "Voters" },
+            { "key": "closesAt", "label": "Closes", "as": "time" }
           ],
           "actions": [
             {
               "label": "Close",
               "method": "POST",
               "path": "v1/admin/polls/{id}/close",
-              "when": {
-                "key": "status",
-                "equals": "open"
-              },
+              "when": { "key": "status", "equals": "open" },
               "confirm": "Close this poll now? Results become visible to everyone."
             },
             {
@@ -267,6 +358,53 @@
               "label": "Close after (days, optional)",
               "placeholder": "7"
             }
+          ]
+        },
+        {
+          "id": "social-challenges",
+          "title": "Challenges",
+          "type": "table",
+          "source": "v1/admin/challenges",
+          "itemsKey": "challenges",
+          "emptyMessage": "No challenges yet.",
+          "columns": [
+            { "key": "title", "label": "Title" },
+            { "key": "tag", "label": "Tag", "as": "code" },
+            { "key": "status", "label": "Status", "as": "badge" },
+            { "key": "entries", "label": "Entries" },
+            { "key": "endsAt", "label": "Ends", "as": "time" }
+          ],
+          "actions": [
+            {
+              "label": "Close",
+              "method": "POST",
+              "path": "v1/admin/challenges/{id}/close",
+              "when": { "key": "status", "equals": "active" },
+              "confirm": "Close this challenge now? If poll voting is enabled, a poll will be created."
+            },
+            {
+              "label": "Delete",
+              "method": "DELETE",
+              "path": "v1/admin/challenges/{id}",
+              "style": "danger",
+              "confirm": "Delete this challenge?"
+            }
+          ]
+        },
+        {
+          "id": "social-new-challenge",
+          "title": "New challenge",
+          "description": "Members enter by publishing a post carrying the challenge tag while it is active.",
+          "type": "form",
+          "method": "POST",
+          "path": "v1/admin/challenges",
+          "submitLabel": "Create challenge",
+          "fields": [
+            { "name": "title", "label": "Title", "placeholder": "November Photo Walk", "required": true },
+            { "name": "tag", "label": "Tag (without #)", "placeholder": "photo-walk", "required": true },
+            { "name": "prompt", "label": "Prompt", "placeholder": "Share your favourite walk photo this week." },
+            { "name": "durationDays", "label": "Duration (days)", "placeholder": "7" },
+            { "name": "voting", "label": "Voting (none or poll)", "placeholder": "poll" }
           ]
         }
       ]

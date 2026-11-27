@@ -299,6 +299,17 @@ final class ExtensionContext
         return rtrim((string) ($inst['directoryUrl'] ?? ''), '/');
     }
 
+    /**
+     * This hub's display title (from admin settings, config.php, or 'Webring Hub').
+     */
+    public function hubTitle(): string
+    {
+        $inst = is_array($this->config['instance'] ?? null) ? $this->config['instance'] : [];
+        $meta = Database::getInstanceMeta($this->pdo, Database::normalizeInstanceMeta($inst, Database::DEFAULT_INSTANCE_META));
+        $title = trim((string) ($meta['title'] ?? ''));
+        return $title !== '' ? $title : Database::DEFAULT_INSTANCE_META['title'];
+    }
+
     public function isoNow(): string
     {
         return Database::isoNow();
@@ -1003,7 +1014,7 @@ final class ExtensionUi
     public const COLUMN_RENDERERS = ['text', 'code', 'time', 'badge'];
     public const ACTION_METHODS = ['POST', 'DELETE'];
 
-    public const MAX_PANELS = 8;
+    public const MAX_PANELS = 12;
     public const MAX_COLUMNS = 12;
     public const MAX_ACTIONS = 6;
     public const MAX_FIELDS = 12;

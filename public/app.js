@@ -260,3 +260,33 @@ if (siteBannerImg) {
     if (header) header.classList.remove('has-banner');
   });
 }
+
+// ---- Home page horizontal tabs ----
+(function initHomeTabs() {
+  const nav = document.getElementById('hub-home-tabs');
+  if (!nav) return;
+  const tabBtns = Array.from(nav.querySelectorAll('[data-home-tab]'));
+  const panels = Array.from(document.querySelectorAll('.hub-home-panel'));
+  if (!tabBtns.length || !panels.length) return;
+
+  function selectHomeTab(tabId, updateHash = true) {
+    const valid = tabBtns.some((b) => b.dataset.homeTab === tabId) ? tabId : 'profiles';
+    for (const btn of tabBtns) {
+      btn.setAttribute('aria-selected', btn.dataset.homeTab === valid ? 'true' : 'false');
+    }
+    for (const panel of panels) {
+      panel.hidden = panel.id !== `home-tab-${valid}`;
+    }
+    if (updateHash) {
+      const next = `#${valid}`;
+      if (location.hash !== next) history.replaceState(null, '', next);
+    }
+  }
+
+  for (const btn of tabBtns) {
+    btn.addEventListener('click', () => selectHomeTab(btn.dataset.homeTab));
+  }
+  const fromHash = () => (location.hash || '').replace(/^#/, '') || 'profiles';
+  window.addEventListener('hashchange', () => selectHomeTab(fromHash(), false));
+  selectHomeTab(fromHash(), false);
+})();

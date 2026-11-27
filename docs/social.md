@@ -102,9 +102,33 @@ An ask or offer is a `post` with a `listing` object: `{ "kind": "ask" | "offer",
         'reactions' => ['like', 'heart', 'celebrate', 'think'], // up to 8 keys
         'pollCreators' => 'members', // or 'admin'
         'pollResults' => 'after_vote', // or 'always'
+        'welcomeDays' => 14,         // days a newly listed member appears on the welcome wall
+        'introTag' => 'intro',       // tag used to link a newcomer's intro post
+        'spotlight' => true,         // daily deterministic member spotlight on Feed and Digest
+        'roles' => [],               // up to 5 custom role labels in addition to organizer and moderator
+        'channels' => [              // up to 30 curated topic channels
+            // ['tag' => 'woodworking', 'title' => 'Woodworking', 'description' => 'Shop notes'],
+        ],
+        'openChannels' => false,     // true: include any tag used by 3+ active members in 30 days
+        'badgeThresholds' => [       // optional overrides for nightly earned badges
+            'host' => 3,
+            'helper' => 3,
+            'voice' => 25,
+            'welcomer' => 10,
+            'voucher' => 5,
+            'foundingDays' => 30,
+            'participant' => 3,
+        ],
     ],
 ],
 ```
+
+## Identity & belonging (Tier 3)
+
+- **Vouches:** signed `post` items with a `vouch` object (`subjectDid`, `subjectSiteUrl`, `kind`: `met` | `skill` | `worked-with`, `skill`). Indexed only when the subject is an active entry whose `site_url` matches `subjectSiteUrl` and voucher ≠ subject; newest wins per `(voucher, subject, kind, skill)`. Deleting the post revokes the vouch. If `key-witness` is enabled, vouches whose voucher rotated their key after `published_at` are marked `keyChangedSince: true`. Subjects may toggle "Hide vouches about me" under opt-in (`POST v1/me/vouch-prefs`).
+- **Welcome wall & spotlight:** active members listed within `welcomeDays` appear in the "New here" strip with preset-only greetings (`wave`, `welcome`, `coffee`, 30/hour, no self-greetings) and a link to their `#intro` post. Member spotlight picks one active member per UTC day deterministically (`sha256(date + "\n" + did)`) from members who posted in the last 30 days.
+- **Roles & badges:** admins assign built-in (`organizer`, `moderator`) or custom role labels; earned badges (`host`, `helper`, `voice`, `welcomer`, `voucher`, `founding`) are computed on `cron.refresh`. Roles and badges are part of the hub's record: they are deleted on removal or block, not on opt-out.
+- **Guestbooks (Rule 3 amendment):** the only Tier 3 feature that stores free text about another member on the hub. Allowed only when the **owner** explicitly enables their guestbook (`POST v1/me/guestbook`), plain text ≤ 280 characters, signed by opted-in verified members (1 per author per owner per day, 20 per author per day). The owner or author can delete any entry, entries use the same report reasons and admin Hide/Dismiss/Restore panels as items, and the owner can export entries as CSV (`GET v1/me/guestbook.csv`). Disabling keeps entries hidden; owner or author opt-out/removal/block purges them.
 
 ## API (`/api/ext/social/v1/`)
 
@@ -113,7 +137,7 @@ Items are addressed by `did` and `itemId` in the query string or body, never in 
 | Route | Access | What it does |
 | --- | --- | --- |
 | `GET config` | public | Reactions, report reasons, `membersOnly`, and whether the caller is signed in and opted in |
-| `GET feed?limit&type&before` | public (members with `membersOnly`) | Top-level items, newest first, each with `author`, `replyCount`, `reactions` and `myReactions`. `before` takes the `nextCursor` from the previous page. |
+| `GET feed?limit&type&tag&from&to&q&before` | public (members with `membersOnly`) | Top-level items, newest first, each with `author`, `replyCount`, `reactions` and `myReactions`. Supports channel `tag` (or `__following`), UTC `from`/`to` time bounds (used by Daily Feed), keyword search `q`, and compound cursor `before`. |
 | `GET thread?did&id` | as feed | `root` (nested `children`, depth ≤ 6, ≤ 300 nodes), `focus`, `nodeCount`, `truncated`. Opening a reply climbs to its root. |
 | `POST reactions` `{did, itemId, reaction, on}` | signed in + opted in + CSRF | Adds or removes a reaction (idempotent). 120 per hour per member. |
 | `POST reports` `{did, itemId, reason, note}` | signed in + opted in + CSRF | One report per member per item, 20 per day. You can't report your own item. Returns `autoHidden`. |
@@ -131,14 +155,32 @@ Items are addressed by `did` and `itemId` in the query string or body, never in 
 | `GET admin/summary`, `GET admin/reports?status=`, `GET admin/hidden`, `GET admin/polls` | admin token | Panel data |
 | `POST admin/reports/{id}/hide`, `…/dismiss`, `POST admin/hidden/{id}/restore` | admin token | Moderation actions |
 | `POST admin/polls` `{question, options, closesInDays}`, `POST admin/polls/{id}/close`, `DELETE admin/polls/{id}` | admin token | Poll management (options separated by `\|`) |
+| `GET people` | as feed | Active members with roles, badges, vouch counts and guestbook availability |
+| `GET members/vouches?did=`, `GET vouches/recent` | as feed | Received (grouped by kind/skill) and given vouches, or recent vouches |
+| `GET me/vouch-prefs`, `POST me/vouch-prefs` `{hideReceived}` | signed in (+ opt-in for POST) | Subject toggle to hide vouches about themselves |
+| `GET welcome`, `GET spotlight` | as feed | Newcomers with greeting counts & intro posts; daily deterministic member spotlight |
+| `POST greetings` `{subjectDid, kind, on}` | signed in + opted in + CSRF | Preset greeting (`wave`, `welcome`, `coffee`), 30/hour, no self-greeting |
+| `GET guestbook?did=`, `POST guestbook` `{ownerDid, body}`, `DELETE guestbook/{id}`, `POST guestbook/{id}/report` | as feed / opt-in / owner or author | Read, sign (≤280 chars), delete or report guestbook entries |
+| `POST me/guestbook` `{enabled}`, `GET me/guestbook.csv` | signed in (+ opt-in for POST) | Enable/disable own guestbook; export entries as CSV |
+| `GET admin/roles`, `POST admin/roles` `{did, role}`, `DELETE admin/roles/{id}`, `POST admin/badges/recompute` | admin token | Role assignment and manual badge recomputation |
+| `GET admin/guestbook/reports`, `GET admin/guestbook/hidden`, `POST admin/guestbook/reports/{id}/hide\|dismiss`, `POST admin/guestbook/hidden/{id}/restore` | admin token | Guestbook moderation |
+| `GET channels`, `GET me/follows`, `POST follows` `{tag, on}` | as feed / signed in (+ opt-in) | Curated & open topic channels with 7d counts; follow/unfollow (max 50). Feed supports `?tag=<tag>` and `?tag=__following`. |
+| `GET library?days&limit`, `POST library/vote` `{url, on}` | as feed / opt-in | De-duplicated shared/recommended links and upvotes (never fetches remote URLs) |
+| `GET now` | as feed | Members' latest `Now` status from `entries.now_text` (hidden after 30 days) |
+| `GET challenges`, `GET challenges/{id}` | as feed | Active, upcoming and past challenges with tag-matched entries |
+| `GET admin/challenges`, `POST admin/challenges`, `POST admin/challenges/{id}/close`, `DELETE admin/challenges/{id}` | admin token | Manage challenges; closing a `voting=poll` challenge creates a Tier 2 poll and emits `ext.social.challenge_closed` |
 
 Signed-in routes use the hub session cookie. POSTs need the `X-Hub-Csrf` header from `GET /api/auth/me`.
 
 ## Tables
 
-The tables are `ext_social_reactions`, `_mentions`, `_reports`, `_hidden`, `_seen` and `_limits`, plus (schema 2) `_events`, `_rsvps`, `_listings`, `_polls`, `_poll_options` and `_poll_votes`. Items are keyed by `item_key = sha256(did + "\n" + itemId)`, with `item_did` / `item_id` kept for purges and display. `social` reads `ext_webhook_sync_items` (declared in `reads`) and never writes to it. `webhook-sync` schema 2 adds the indexed `target_url` column used for replies.
+The tables are `ext_social_reactions`, `_mentions`, `_reports`, `_hidden`, `_seen` and `_limits`, plus (schema 2) `_events`, `_rsvps`, `_listings`, `_polls`, `_poll_options` and `_poll_votes`, plus (schema 3) `_vouches`, `_vouch_prefs`, `_greetings`, `_roles`, `_badges`, `_guestbooks`, `_guestbook_entries` and `_guestbook_reports`, plus (schema 4) `_item_tags`, `_follows`, `_pick_votes` and `_challenges`. Items are keyed by `item_key = sha256(did + "\n" + itemId)`, with `item_did` / `item_id` kept for purges and display. `social` reads `ext_webhook_sync_items` (declared in `reads`) and never writes to it. `webhook-sync` schema 2 adds the indexed `target_url` column used for replies.
 
 ## Testing
+
+`php scripts/smoke-social-structure.php` covers Tier 4 channels, follows, shared library, Now wall, challenges, challenge badges, and the `groups` working-groups extension.
+
+`php scripts/smoke-social-belonging.php` covers Tier 3 vouches, key-witness checks, welcome wall, greetings, spotlight, roles, nightly badges, guestbooks, CSV export, guestbook moderation and all purge paths.
 
 `php scripts/smoke-social-groups.php` covers events, RSVPs, the calendar feed, asks & offers matching, polls, the digest and its Atom feed, and their purges.
 

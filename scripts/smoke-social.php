@@ -82,7 +82,7 @@ check(!$ext->isLoaded('social') && str_contains((string) $err, 'webhook-sync'), 
 [$pdo, $ext] = $load(['social', 'webhook-sync'], ['autoHideReports' => 3]);
 check($ext->isLoaded('webhook-sync') && $ext->isLoaded('social'), 'social loads after webhook-sync even when listed first');
 $social = array_values(array_filter($ext->adminList(), static fn ($e) => $e['id'] === 'social'))[0] ?? [];
-check(($social['kind'] ?? '') === 'both' && count($social['panels'] ?? []) === 5 && ($social['uiError'] ?? null) === null, 'social declares a public card and 5 valid admin panels');
+check(($social['kind'] ?? '') === 'both' && count($social['panels'] ?? []) >= 9 && ($social['uiError'] ?? null) === null, 'social declares a public card and valid admin panels');
 check(($ext->context('webhook-sync')?->schemaVersion() ?? 0) === 3, 'webhook-sync is at schema 3');
 
 // ---------------------------------------------------------------------------
@@ -226,8 +226,7 @@ check($actBob['unread'] === 0 && $actBob['lastSeenAt'] === null, 'no read-marker
 
 echo "purging\n";
 $react('alice', 'bob', 'b1', 'like');
-$b1Key = hash('sha256', $did('bob') . "
-b1");
+$b1Key = hash('sha256', $did('bob') . "\nb1");
 $before = (int) $pdo->query("SELECT COUNT(*) FROM ext_social_reactions WHERE item_key = '{$b1Key}'")->fetchColumn();
 $wsCtx->emit('items_changed', ['did' => $did('bob'), 'upserted' => [], 'removed' => ['b1'], 'removedAll' => false]);
 $after = (int) $pdo->query("SELECT COUNT(*) FROM ext_social_reactions WHERE item_key = '{$b1Key}'")->fetchColumn();

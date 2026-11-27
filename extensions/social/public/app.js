@@ -10,6 +10,17 @@ const API = new URL('../../api/ext/social/v1/', import.meta.url).pathname;
 const EXT_ID = 'social';
 const REACTION_LABELS = { like: '👍', heart: '❤️', celebrate: '🎉', think: '🤔' };
 const TYPE_LABELS = { post: 'Post', comment: 'Comment', like: 'Like', share: 'Share', recommendation: 'Recommendation' };
+const GREETING_LABELS = { wave: '👋 Wave', welcome: '🎉 Welcome', coffee: '☕ Say hi' };
+const BADGE_META = {
+  host: { icon: '📅', label: 'Host (3+ events)' },
+  helper: { icon: '🎁', label: 'Helper (3+ closed offers)' },
+  voice: { icon: '💬', label: 'Voice (25+ replies)' },
+  welcomer: { icon: '👋', label: 'Welcomer (10+ newcomers greeted)' },
+  voucher: { icon: '🤝', label: 'Voucher (5+ vouches given)' },
+  founding: { icon: '🌱', label: 'Founding member' },
+  participant: { icon: '🏅', label: 'Challenge participant (3+ challenges)' },
+  champion: { icon: '🏆', label: 'Challenge champion' },
+};
 
 const $ = (id) => document.getElementById(id);
 const auth = window.webringHubAuth;
@@ -18,6 +29,11 @@ const state = {
   config: { reactions: Object.keys(REACTION_LABELS), reportReasons: ['spam', 'abuse', 'off-topic', 'other'], membersOnly: false },
   me: { authenticated: false, user: null, consents: [] },
   feedType: '',
+  feedTag: '',
+  feedDate: '',
+  feedTimeFrom: '',
+  feedTimeTo: '',
+  feedQuery: '',
   feedCursor: null,
   activityBefore: null,
   lastFeedHash: '#feed',
@@ -26,6 +42,7 @@ const state = {
   boardKind: '',
   boardStatus: 'open',
   pollStatus: 'open',
+  guestbookOwnerDid: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,12 +96,20 @@ async function api(path, { method = 'GET', body, query } = {}) {
 function relTime(iso) {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return '';
-  const s = Math.round((Date.now() - t) / 1000);
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
-  return new Date(t).toLocaleDateString();
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  const w = Math.floor(d / 7);
+  if (d < 30) return `${w}w ago`;
+  const mo = Math.max(1, Math.floor(d / 30));
+  if (d < 365) return `${mo}mo ago`;
+  const y = Math.max(1, Math.floor(d / 365));
+  return `${y}y ago`;
 }
 
 function safeHttpUrl(raw) {
@@ -96,27 +121,123 @@ function safeHttpUrl(raw) {
   }
 }
 
-/** Plain text with http(s) URLs turned into links, all built with DOM APIs. */
+/** Renders inline Markdown (`code`, **bold**, *italic*, [label](url), bare http(s) URLs) with DOM APIs only. */
+function richInline(text) {
+  const frag = document.createDocumentFragment();
+  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\s\n][^*\n]*\*|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s<>"']+)/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) frag.append(document.createTextNode(text.slice(last, m.index)));
+    const tok = m[0];
+    if (tok.startsWith('`') && tok.endsWith('`')) {
+      frag.append(el('code', 'md-inline-code', tok.slice(1, -1)));
+    } else if (tok.startsWith('**') && tok.endsWith('**')) {
+      frag.append(el('strong', null, tok.slice(2, -2)));
+    } else if (tok.startsWith('*') && tok.endsWith('*')) {
+      frag.append(el('em', null, tok.slice(1, -1)));
+    } else if (tok.startsWith('[')) {
+      const lm = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/.exec(tok);
+      const href = lm ? safeHttpUrl(lm[2]) : null;
+      if (lm && href) {
+        const a = el('a', null, lm[1]);
+        a.href = href;
+        a.rel = 'nofollow ugc noopener noreferrer';
+        a.target = '_blank';
+        frag.append(a);
+      } else {
+        frag.append(document.createTextNode(tok));
+      }
+    } else {
+      const cleaned = tok.replace(/[.,;:!?)]+$/, '');
+      const href = safeHttpUrl(cleaned);
+      if (href) {
+        const a = el('a', null, cleaned);
+        a.href = href;
+        a.rel = 'nofollow ugc noopener noreferrer';
+        a.target = '_blank';
+        frag.append(a);
+        if (cleaned.length < tok.length) frag.append(document.createTextNode(tok.slice(cleaned.length)));
+      } else {
+        frag.append(document.createTextNode(tok));
+      }
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) frag.append(document.createTextNode(text.slice(last)));
+  return frag;
+}
+
+/** Safe DOM Markdown renderer supporting fenced code blocks (```lang), paragraphs, and inline formatting. */
 function richText(text) {
   const frag = document.createDocumentFragment();
-  const parts = String(text || '').split(/(https?:\/\/[^\s<>"']+)/g);
-  for (const part of parts) {
-    const href = /^https?:\/\//.test(part) ? safeHttpUrl(part.replace(/[.,;:!?)]+$/, '')) : null;
-    if (href) {
-      const a = el('a', null, part);
-      a.href = href;
-      a.rel = 'nofollow ugc noopener noreferrer';
-      a.target = '_blank';
-      frag.append(a);
-    } else if (part) {
-      frag.append(document.createTextNode(part));
+  const src = String(text || '').replace(/\r\n?/g, '\n');
+  const fenceRe = /^```([A-Za-z0-9_+.-]{0,24})\s*\n([\s\S]*?)^```\s*$/gm;
+  let last = 0;
+  let m;
+  const appendProse = (chunk) => {
+    const trimmed = chunk.replace(/^\n+|\n+$/g, '');
+    if (!trimmed) return;
+    for (const para of trimmed.split(/\n{2,}/)) {
+      const p = el('p', 'md-para');
+      const lines = para.split('\n');
+      lines.forEach((ln, idx) => {
+        if (idx > 0) p.append(document.createElement('br'));
+        p.append(richInline(ln));
+      });
+      frag.append(p);
     }
+  };
+  while ((m = fenceRe.exec(src)) !== null) {
+    if (m.index > last) appendProse(src.slice(last, m.index));
+    const lang = m[1] || 'code';
+    const codeText = m[2].replace(/\n$/, '');
+    const wrap = el('div', 'md-code-block');
+    const head = el('div', 'md-code-head');
+    head.append(el('span', 'md-code-lang', lang));
+    const copyBtn = el('button', 'hub-btn md-code-copy', 'Copy');
+    copyBtn.type = 'button';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(codeText);
+        copyBtn.textContent = 'Copied';
+        setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
+      } catch {
+        // Clipboard unavailable
+      }
+    });
+    head.append(copyBtn);
+    const pre = document.createElement('pre');
+    pre.append(el('code', null, codeText));
+    wrap.append(head, pre);
+    frag.append(wrap);
+    last = m.index + m[0].length;
   }
+  if (last < src.length) appendProse(src.slice(last));
   return frag;
 }
 
 function authorName(author) {
   return author.displayName || author.handle || author.did;
+}
+
+function authorBadgesEl(author) {
+  const roles = Array.isArray(author.roles) ? author.roles : [];
+  const badges = Array.isArray(author.badges) ? author.badges : [];
+  if (!roles.length && !badges.length) return null;
+  const wrap = el('span', 'social-author-badges');
+  for (const r of roles) {
+    wrap.append(el('span', 'chip social-role-chip', r));
+  }
+  for (const b of badges) {
+    const m = BADGE_META[b];
+    if (!m) continue;
+    const sp = el('span', 'social-badge-icon', m.icon);
+    sp.title = m.label;
+    sp.setAttribute('aria-label', m.label);
+    wrap.append(sp);
+  }
+  return wrap;
 }
 
 function avatar(author) {
@@ -215,6 +336,7 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
   const head = el('div', 'entry-head social-head');
   head.append(avatar(item.author));
   const who = el('div', 'social-who');
+  const nameRow = el('div', 'social-name-row');
   const nameLink = el('a', 'social-name', authorName(item.author));
   const site = safeHttpUrl(item.author.siteUrl);
   if (site) {
@@ -222,7 +344,10 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
     nameLink.rel = 'noopener noreferrer';
     nameLink.target = '_blank';
   }
-  who.append(nameLink);
+  nameRow.append(nameLink);
+  const ab = authorBadgesEl(item.author);
+  if (ab) nameRow.append(ab);
+  who.append(nameRow);
   const meta = el('span', 'social-meta');
   if (item.author.handle) meta.append(el('span', 'social-handle', `@${item.author.handle.replace(/^@/, '')}`));
   const time = el('time', 'social-time', relTime(item.publishedAt));
@@ -236,16 +361,39 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
       `${item.listing.kind === 'ask' ? 'Ask' : 'Offer'}${item.listing.status === 'closed' ? ' · closed' : ''}`));
   } else if (item.event) {
     head.append(el('span', 'chip social-type', 'Event'));
+  } else if (item.vouch) {
+    head.append(el('span', 'chip social-type', 'Vouch'));
   } else if (item.type !== 'post') {
     head.append(el('span', 'chip social-type', TYPE_LABELS[item.type] || item.type));
   }
   card.append(head);
 
   if (item.title) card.append(el('h3', 'social-title', item.title));
+  if (item.vouch) {
+    const vb = el('div', 'social-vouch-box');
+    const detail = item.vouch.kind === 'skill'
+      ? `skill: ${item.vouch.skill}`
+      : item.vouch.kind === 'worked-with'
+      ? 'worked with'
+      : 'met';
+    vb.append(document.createTextNode('🤝 Vouches for '));
+    const sUrl = safeHttpUrl(item.vouch.subjectSiteUrl);
+    if (sUrl) {
+      const a = el('a', null, item.vouch.subjectSiteUrl.replace(/^https?:\/\//i, ''));
+      a.href = sUrl;
+      a.rel = 'noopener noreferrer';
+      a.target = '_blank';
+      vb.append(a);
+    } else {
+      vb.append(el('strong', null, item.vouch.subjectDid));
+    }
+    vb.append(document.createTextNode(`: ${detail}`));
+    card.append(vb);
+  }
   if (item.commentary) {
-    const p = el('p', 'social-text');
-    p.append(richText(item.commentary));
-    card.append(p);
+    const body = el('div', 'social-text');
+    body.append(richText(item.commentary));
+    card.append(body);
   }
   if (item.event) card.append(eventDetails(item.event));
   if (item.mediaUrl) {
@@ -311,8 +459,9 @@ function itemCard(item, { inThread = false, focus = false } = {}) {
 // ---------------------------------------------------------------------------
 
 function setView(name) {
-  for (const v of ['feed', 'thread', 'events', 'board', 'polls', 'digest', 'activity']) {
-    $(`view-${v}`).hidden = v !== name;
+  for (const v of ['feed', 'people', 'library', 'now', 'challenges', 'thread', 'events', 'board', 'polls', 'digest', 'activity']) {
+    const node = $(`view-${v}`);
+    if (node) node.hidden = v !== name;
   }
   for (const tab of document.querySelectorAll('.social-tab')) {
     const active = tab.dataset.tab === name || (name === 'thread' && tab.dataset.tab === 'feed');
@@ -322,22 +471,65 @@ function setView(name) {
   }
 }
 
+function localDateStr(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function shiftLocalDate(dateStr, deltaDays) {
+  const [y, m, day] = dateStr.split('-').map(Number);
+  const d = new Date(y, (m || 1) - 1, (day || 1) + deltaDays);
+  return localDateStr(d);
+}
+
+/** Converts the user's selected local day + optional HH:MM time bounds into UTC ISO timestamps. */
+function dailyBoundsUtc() {
+  const dateStr = state.feedDate || localDateStr();
+  const [y, m, day] = dateStr.split('-').map(Number);
+  const [fh, fm] = (state.feedTimeFrom || '00:00').split(':').map(Number);
+  const [th, tm] = (state.feedTimeTo || '23:59').split(':').map(Number);
+  const start = new Date(y, (m || 1) - 1, day || 1, fh || 0, fm || 0, 0, 0);
+  const end = new Date(y, (m || 1) - 1, day || 1, Number.isFinite(th) ? th : 23, Number.isFinite(tm) ? tm : 59, 59, 999);
+  return {
+    from: Number.isNaN(start.getTime()) ? '' : start.toISOString(),
+    to: Number.isNaN(end.getTime()) ? '' : end.toISOString(),
+  };
+}
+
+function syncDailyBarUi() {
+  const today = localDateStr();
+  if (!state.feedDate) state.feedDate = today;
+  if ($('feed-date')) $('feed-date').value = state.feedDate;
+  if ($('feed-time-from')) $('feed-time-from').value = state.feedTimeFrom;
+  if ($('feed-time-to')) $('feed-time-to').value = state.feedTimeTo;
+  if ($('feed-search')) $('feed-search').value = state.feedQuery;
+  if ($('feed-day-today')) $('feed-day-today').disabled = state.feedDate === today;
+  if ($('feed-filter-reset')) {
+    $('feed-filter-reset').hidden = state.feedDate === today && !state.feedTimeFrom && !state.feedTimeTo && !state.feedQuery;
+  }
+}
+
 async function loadFeed(reset) {
   const list = $('feed-list');
   const status = $('feed-status');
+  syncDailyBarUi();
   if (reset) {
     list.replaceChildren();
     state.feedCursor = null;
   }
   status.textContent = 'Loading…';
   $('feed-more').hidden = true;
+  const { from, to } = dailyBoundsUtc();
   try {
-    const data = await api('feed', { query: { type: state.feedType, before: state.feedCursor, limit: 20 } });
+    const data = await api('feed', {
+      query: { type: state.feedType, tag: state.feedTag, from, to, q: state.feedQuery, before: state.feedCursor, limit: 20 },
+    });
     for (const item of data.items) list.append(itemCard(item));
     state.feedCursor = data.nextCursor;
     $('feed-more').hidden = !data.nextCursor;
+    const isToday = state.feedDate === localDateStr();
     status.textContent = list.childElementCount === 0
-      ? 'Nothing here yet. Members publish posts from Webring Studio; they appear after their site syncs with this hub.'
+      ? `No posts for ${isToday ? 'today' : state.feedDate}${state.feedTimeFrom || state.feedTimeTo ? ' in this time window' : ''}${state.feedQuery ? ` matching "${state.feedQuery}"` : ''}. Pick another day or adjust the filter above.`
       : '';
   } catch (err) {
     status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
@@ -504,13 +696,21 @@ $('report-form').addEventListener('submit', async (e) => {
   const reason = new FormData($('report-form')).get('reason');
   $('report-submit').disabled = true;
   try {
-    const res = await api('reports', {
-      method: 'POST',
-      body: { did: item.did, itemId: item.itemId, reason, note: $('report-note').value },
-    });
+    const res = item.kind === 'guestbook'
+      ? await api(`guestbook/${item.id}/report`, {
+          method: 'POST',
+          body: { reason, note: $('report-note').value },
+        })
+      : await api('reports', {
+          method: 'POST',
+          body: { did: item.did, itemId: item.itemId, reason, note: $('report-note').value },
+        });
     $('report-dialog').close();
-    showNotice(res.message, 'success');
-    if (res.autoHidden) route();
+    showNotice(res.message || 'Report submitted.', 'success');
+    if (res.autoHidden) {
+      if (item.kind === 'guestbook' && state.guestbookOwnerDid) loadGuestbookEntries(state.guestbookOwnerDid);
+      else route();
+    }
   } catch (err) {
     const s = $('report-status');
     s.textContent = err.message;
@@ -818,6 +1018,19 @@ async function loadDigest() {
     const d = await api('digest', { query: { days: 7 } });
     $('digest-period').textContent = `${new Date(d.period.from).toLocaleDateString()} – ${new Date(d.period.to).toLocaleDateString()}: ${d.stats.posts} posts, ${d.stats.comments} comments, ${d.stats.reactions} reactions`;
     body.append(
+      ...(d.spotlight ? [digestSection('Member spotlight', [(() => {
+        const f = document.createDocumentFragment();
+        const href = safeHttpUrl(d.spotlight.siteUrl);
+        const a = el('a', null, d.spotlight.displayName || d.spotlight.did);
+        if (href) {
+          a.href = href;
+          a.rel = 'noopener noreferrer';
+          a.target = '_blank';
+        }
+        f.append(a);
+        if (d.spotlight.vouchCount) f.append(el('span', 'hint', ` · Vouched by ${d.spotlight.vouchCount} ${d.spotlight.vouchCount === 1 ? 'member' : 'members'}`));
+        return f;
+      })()], '')] : []),
       digestSection('Busiest conversations', d.topConversations.map((it) => {
         const f = document.createDocumentFragment();
         f.append(el('strong', null, authorName(it.author)), document.createTextNode(': '), threadLink(it, itemLabel(it)),
@@ -920,6 +1133,592 @@ for (const btn of document.querySelectorAll('[data-poll-status]')) {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 3: Welcome wall, Spotlight, People, Vouches, Guestbooks
+// ---------------------------------------------------------------------------
+
+function greetingBar(member) {
+  const bar = el('div', 'social-greetings');
+  const mine = new Set(member.myGreetings || []);
+  for (const kind of Object.keys(GREETING_LABELS)) {
+    const count = (member.greetingCounts && member.greetingCounts[kind]) || 0;
+    const btn = el('button', 'hub-btn social-react');
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', mine.has(kind) ? 'true' : 'false');
+    btn.disabled = member.did === myDid();
+    btn.append(el('span', null, GREETING_LABELS[kind]));
+    if (count) btn.append(el('span', 'social-react-count', count));
+    btn.addEventListener('click', async () => {
+      if (!(await ensureCanAct())) return;
+      btn.disabled = true;
+      try {
+        const res = await api('greetings', {
+          method: 'POST',
+          body: { subjectDid: member.did, kind, on: !mine.has(kind) },
+        });
+        member.greetingCounts = res.counts;
+        member.myGreetings = res.myGreetings;
+        bar.replaceWith(greetingBar(member));
+      } catch (err) {
+        showNotice(err.message, 'error');
+        btn.disabled = false;
+      }
+    });
+    bar.append(btn);
+  }
+  return bar;
+}
+
+async function loadFeedBelonging() {
+  const box = $('feed-belonging');
+  if (!box) return;
+  box.replaceChildren();
+  box.hidden = true;
+  try {
+    const [spot, wel] = await Promise.all([
+      api('spotlight').catch(() => ({ enabled: false, member: null })),
+      api('welcome').catch(() => ({ members: [] })),
+    ]);
+    let hasAny = false;
+
+    if (spot && spot.enabled && spot.member) {
+      hasAny = true;
+      const m = spot.member;
+      const card = el('section', 'panel social-spotlight');
+      card.append(el('h2', 'social-section-label', '✨ Member spotlight'));
+      const head = el('div', 'entry-head social-head');
+      head.append(avatar(m));
+      const who = el('div', 'social-who');
+      const nr = el('div', 'social-name-row');
+      const link = el('a', 'social-name', authorName(m));
+      const href = safeHttpUrl(m.siteUrl);
+      if (href) {
+        link.href = href;
+        link.rel = 'noopener noreferrer';
+        link.target = '_blank';
+      }
+      nr.append(link);
+      const ab = authorBadgesEl(m);
+      if (ab) nr.append(ab);
+      who.append(nr);
+      if (m.vouchCount > 0) {
+        who.append(el('span', 'social-meta', `🤝 Vouched by ${m.vouchCount} ${m.vouchCount === 1 ? 'member' : 'members'}`));
+      }
+      head.append(who);
+      card.append(head);
+      if (m.bio) card.append(el('p', 'social-text', m.bio));
+      if (m.latestPost) {
+        const p = el('p', 'hint social-spotlight-post');
+        p.append(document.createTextNode('Latest post: '), threadLink(m.latestPost, itemLabel(m.latestPost)));
+        card.append(p);
+      }
+      box.append(card);
+    }
+
+    if (wel && Array.isArray(wel.members) && wel.members.length > 0) {
+      hasAny = true;
+      const strip = el('section', 'panel social-welcome-strip');
+      strip.append(el('h2', 'social-section-label', '👋 New here'));
+      const grid = el('div', 'social-welcome-grid');
+      for (const m of wel.members.slice(0, 6)) {
+        const c = el('div', 'social-welcome-card');
+        const head = el('div', 'entry-head social-head');
+        head.append(avatar(m));
+        const who = el('div', 'social-who');
+        const link = el('a', 'social-name', authorName(m));
+        const href = safeHttpUrl(m.siteUrl);
+        if (href) {
+          link.href = href;
+          link.rel = 'noopener noreferrer';
+          link.target = '_blank';
+        }
+        who.append(link, el('span', 'social-meta', `Joined ${relTime(m.createdAt)}`));
+        head.append(who);
+        c.append(head);
+        if (m.introPost) {
+          const intro = el('p', 'hint social-intro-link');
+          intro.append(document.createTextNode('Intro: '), threadLink(m.introPost, m.introPost.title || m.introPost.excerpt));
+          c.append(intro);
+        }
+        c.append(greetingBar(m));
+        grid.append(c);
+      }
+      strip.append(grid);
+      strip.append(el('p', 'hint social-welcome-hint', `Say hi with a preset above, or reply to a newcomer's #${wel.introTag || 'intro'} post from Webring Studio.`));
+      box.append(strip);
+    }
+
+    box.hidden = !hasAny;
+  } catch {
+    box.hidden = true;
+  }
+}
+
+async function openVouchesDialog(member) {
+  const dlg = $('vouches-dialog');
+  const body = $('vouches-body');
+  $('vouches-title').textContent = `Vouches · ${authorName(member)}`;
+  body.replaceChildren(el('p', 'hint', 'Loading…'));
+  dlg.showModal();
+  try {
+    const data = await api('members/vouches', { query: { did: member.did } });
+    body.replaceChildren();
+    if (data.hidden && member.did !== myDid()) {
+      body.append(el('p', 'hint', 'This member has chosen to hide vouches about them.'));
+    } else if (data.received.length === 0) {
+      body.append(el('p', 'hint', 'No vouches received yet.'));
+    } else {
+      if (data.hidden) body.append(el('p', 'hint', 'Your received vouches are currently hidden from other members.'));
+      const addGroup = (title, list) => {
+        if (!list || !list.length) return;
+        const sec = el('div', 'social-vouch-group');
+        sec.append(el('h3', null, title));
+        const ul = el('ul', 'social-digest-list');
+        for (const v of list) {
+          const li = el('li');
+          li.append(el('strong', null, authorName(v.voucher)));
+          li.append(el('span', 'hint', ` · ${relTime(v.publishedAt)}`));
+          if (v.keyChangedSince) {
+            li.append(el('span', 'social-key-warn', ' · key changed since'));
+          }
+          ul.append(li);
+        }
+        sec.append(ul);
+        body.append(sec);
+      };
+      addGroup('Met in person', data.grouped.met);
+      addGroup('Worked together', data.grouped['worked-with']);
+      for (const [skill, list] of Object.entries(data.grouped.skill || {})) {
+        addGroup(`Skill: ${skill}`, list);
+      }
+    }
+    if (data.given && data.given.length > 0) {
+      const sec = el('div', 'social-vouch-group');
+      sec.append(el('h3', null, `Vouches given (${data.given.length})`));
+      const ul = el('ul', 'social-digest-list');
+      for (const v of data.given) {
+        const li = el('li');
+        const detail = v.kind === 'skill' ? `skill: ${v.skill}` : v.kind === 'worked-with' ? 'worked with' : 'met';
+        li.append(el('strong', null, authorName(v.subject)), document.createTextNode(` · ${detail}`));
+        if (v.keyChangedSince) li.append(el('span', 'social-key-warn', ' · key changed since'));
+        ul.append(li);
+      }
+      sec.append(ul);
+      body.append(sec);
+    }
+  } catch (err) {
+    body.replaceChildren(el('p', 'hint', err.message));
+  }
+}
+
+async function loadGuestbookEntries(ownerDid) {
+  const list = $('guestbook-list');
+  const status = $('guestbook-status');
+  const form = $('guestbook-form');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  try {
+    const data = await api('guestbook', { query: { did: ownerDid } });
+    $('guestbook-title').textContent = `${data.ownerName || ownerDid}'s guestbook`;
+    form.hidden = !data.enabled || !state.me.authenticated;
+    if (!data.enabled) {
+      status.textContent = 'This member has not turned on their guestbook.';
+      return;
+    }
+    for (const entry of data.entries) {
+      const card = el('article', 'entry social-gb-entry');
+      const head = el('div', 'entry-head social-head');
+      head.append(avatar(entry.author));
+      const who = el('div', 'social-who');
+      const nr = el('div', 'social-name-row');
+      nr.append(el('span', 'social-name', authorName(entry.author)));
+      const ab = authorBadgesEl(entry.author);
+      if (ab) nr.append(ab);
+      who.append(nr, el('span', 'social-meta', relTime(entry.createdAt)));
+      head.append(who);
+      card.append(head);
+      card.append(el('p', 'social-text', entry.body));
+      const actions = el('div', 'social-actions');
+      if (entry.canDelete) {
+        const del = el('button', 'hub-btn', 'Delete');
+        del.type = 'button';
+        del.addEventListener('click', async () => {
+          if (!window.confirm('Delete this guestbook entry?')) return;
+          try {
+            await api(`guestbook/${entry.id}`, { method: 'DELETE' });
+            loadGuestbookEntries(ownerDid);
+          } catch (err) {
+            showNotice(err.message, 'error');
+          }
+        });
+        actions.append(del);
+      }
+      if (state.me.authenticated && entry.author.did !== myDid()) {
+        const rep = el('button', 'hub-btn social-report', 'Report');
+        rep.type = 'button';
+        rep.addEventListener('click', () => openReport({ kind: 'guestbook', id: entry.id }));
+        actions.append(rep);
+      }
+      if (actions.childElementCount > 0) card.append(actions);
+      list.append(card);
+    }
+    status.textContent = data.entries.length ? '' : 'No guestbook entries yet. Be the first to sign!';
+  } catch (err) {
+    status.textContent = err.message;
+  }
+}
+
+function openGuestbookDialog(member) {
+  state.guestbookOwnerDid = member.did;
+  $('guestbook-form').reset();
+  $('guestbook-form-status').textContent = '';
+  $('guestbook-dialog').showModal();
+  loadGuestbookEntries(member.did);
+}
+
+async function loadPeople() {
+  const list = $('people-list');
+  const status = $('people-status');
+  const controls = $('people-my-controls');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+
+  if (state.me.authenticated) {
+    controls.hidden = false;
+    $('pref-guestbook').checked = Boolean(state.config.myGuestbookEnabled);
+    $('pref-guestbook-csv').hidden = !state.config.myGuestbookEnabled;
+    $('pref-hide-vouches').checked = Boolean(state.config.myHideVouches);
+  } else {
+    controls.hidden = true;
+  }
+
+  try {
+    const data = await api('people');
+    for (const m of data.members) {
+      const card = el('article', 'entry social-person-card');
+      const head = el('div', 'entry-head social-head');
+      head.append(avatar(m));
+      const who = el('div', 'social-who');
+      const nr = el('div', 'social-name-row');
+      const link = el('a', 'social-name', authorName(m));
+      const href = safeHttpUrl(m.siteUrl);
+      if (href) {
+        link.href = href;
+        link.rel = 'noopener noreferrer';
+        link.target = '_blank';
+      }
+      nr.append(link);
+      const ab = authorBadgesEl(m);
+      if (ab) nr.append(ab);
+      who.append(nr);
+      if (m.handle) who.append(el('span', 'social-meta', `@${m.handle.replace(/^@/, '')}`));
+      head.append(who);
+      card.append(head);
+      if (m.bio) card.append(el('p', 'social-text', m.bio));
+      const foot = el('div', 'social-actions');
+      const vouchLabel = m.vouchesHidden
+        ? '🤝 Vouches hidden'
+        : `🤝 Vouched by ${m.vouchCount} ${m.vouchCount === 1 ? 'member' : 'members'}`;
+      const vBtn = el('button', 'hub-btn', vouchLabel);
+      vBtn.type = 'button';
+      vBtn.addEventListener('click', () => openVouchesDialog(m));
+      foot.append(vBtn);
+      if (m.guestbookEnabled) {
+        const gBtn = el('button', 'hub-btn', '📖 Guestbook');
+        gBtn.type = 'button';
+        gBtn.addEventListener('click', () => openGuestbookDialog(m));
+        foot.append(gBtn);
+      }
+      card.append(foot);
+      list.append(card);
+    }
+    status.textContent = data.members.length ? '' : 'No active members listed yet.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+$('vouches-close').addEventListener('click', () => $('vouches-dialog').close());
+$('guestbook-close').addEventListener('click', () => $('guestbook-dialog').close());
+
+$('guestbook-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!state.guestbookOwnerDid) return;
+  if (!(await ensureCanAct())) return;
+  $('guestbook-submit').disabled = true;
+  $('guestbook-form-status').textContent = '';
+  try {
+    await api('guestbook', {
+      method: 'POST',
+      body: { ownerDid: state.guestbookOwnerDid, body: $('guestbook-input').value },
+    });
+    $('guestbook-input').value = '';
+    loadGuestbookEntries(state.guestbookOwnerDid);
+  } catch (err) {
+    const s = $('guestbook-form-status');
+    s.textContent = err.message;
+    s.className = 'form-message error';
+  } finally {
+    $('guestbook-submit').disabled = false;
+  }
+});
+
+$('pref-guestbook').addEventListener('change', async (e) => {
+  const checked = e.target.checked;
+  if (!(await ensureCanAct())) {
+    e.target.checked = !checked;
+    return;
+  }
+  try {
+    const res = await api('me/guestbook', { method: 'POST', body: { enabled: checked } });
+    state.config.myGuestbookEnabled = res.enabled;
+    $('pref-guestbook-csv').hidden = !res.enabled;
+    loadPeople();
+  } catch (err) {
+    e.target.checked = !checked;
+    showNotice(err.message, 'error');
+  }
+});
+
+$('pref-hide-vouches').addEventListener('change', async (e) => {
+  const checked = e.target.checked;
+  if (!(await ensureCanAct())) {
+    e.target.checked = !checked;
+    return;
+  }
+  try {
+    const res = await api('me/vouch-prefs', { method: 'POST', body: { hideReceived: checked } });
+    state.config.myHideVouches = res.hideReceived;
+    loadPeople();
+  } catch (err) {
+    e.target.checked = !checked;
+    showNotice(err.message, 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tier 4: Channels, Library, Now wall, Challenges
+// ---------------------------------------------------------------------------
+
+async function loadChannelPicker() {
+  const box = $('channel-picker');
+  if (!box) return;
+  try {
+    const data = await api('channels');
+    const channels = data.channels || [];
+    if (!channels.length) {
+      box.hidden = true;
+      return;
+    }
+    box.replaceChildren();
+    const mkChip = (tag, label, active) => {
+      const btn = el('button', 'hub-btn', label);
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      btn.addEventListener('click', () => {
+        state.feedTag = tag;
+        loadChannelPicker();
+        loadFeed(true);
+      });
+      return btn;
+    };
+    box.append(mkChip('', 'All channels', state.feedTag === ''));
+    if (state.me.authenticated) {
+      box.append(mkChip('__following', '★ Following', state.feedTag === '__following'));
+    }
+    for (const c of channels) {
+      const wrap = el('span', 'social-channel-chip');
+      wrap.append(mkChip(c.tag, `${c.title}${c.items7d ? ` (${c.items7d})` : ''}`, state.feedTag === c.tag));
+      if (state.me.authenticated) {
+        const fBtn = el('button', 'hub-btn social-follow-btn', c.following ? '✓' : '+');
+        fBtn.type = 'button';
+        fBtn.title = c.following ? `Unfollow #${c.tag}` : `Follow #${c.tag}`;
+        fBtn.addEventListener('click', async () => {
+          if (!(await ensureCanAct())) return;
+          try {
+            await api('follows', { method: 'POST', body: { tag: c.tag, on: !c.following } });
+            loadChannelPicker();
+          } catch (err) {
+            showNotice(err.message, 'error');
+          }
+        });
+        wrap.append(fBtn);
+      }
+      box.append(wrap);
+    }
+    box.hidden = false;
+  } catch {
+    box.hidden = true;
+  }
+}
+
+async function loadActiveChallengeBanner() {
+  const banner = $('feed-challenge-banner');
+  if (!banner) return;
+  try {
+    const data = await api('challenges');
+    const active = (data.active || [])[0];
+    if (!active) {
+      banner.hidden = true;
+      return;
+    }
+    banner.replaceChildren();
+    const title = el('strong', null, `🏆 Active challenge: ${active.title} `);
+    const tag = el('code', null, `#${active.tag}`);
+    const link = el('a', 'hub-btn', `View (${active.entryCount} ${active.entryCount === 1 ? 'entry' : 'entries'})`);
+    link.href = '#challenges';
+    banner.append(title, tag, document.createTextNode(' · '), link);
+    banner.hidden = false;
+  } catch {
+    banner.hidden = true;
+  }
+}
+
+async function loadLibrary() {
+  const list = $('library-list');
+  const status = $('library-status');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  try {
+    const data = await api('library', { query: { limit: 50 } });
+    for (const pick of data.picks || []) {
+      const card = el('article', 'entry social-card');
+      const link = el('a', 'social-title', pick.title);
+      const safe = safeHttpUrl(pick.url);
+      if (safe) {
+        link.href = safe;
+        link.rel = 'nofollow ugc noopener noreferrer';
+        link.target = '_blank';
+      }
+      card.append(link);
+      if (pick.excerpt) card.append(el('p', 'social-text', pick.excerpt));
+      const names = (pick.sharers || []).map((s) => s.displayName || s.did).join(', ');
+      card.append(el('p', 'hint', `Shared by ${names} · ${relTime(pick.latestAt)}`));
+      const voteBtn = el('button', 'hub-btn', `👍 Pick (${pick.votes})`);
+      voteBtn.type = 'button';
+      voteBtn.setAttribute('aria-pressed', pick.myVote ? 'true' : 'false');
+      voteBtn.addEventListener('click', async () => {
+        if (!(await ensureCanAct())) return;
+        voteBtn.disabled = true;
+        try {
+          const res = await api('library/vote', { method: 'POST', body: { url: pick.url, on: !pick.myVote } });
+          pick.votes = res.votes;
+          pick.myVote = res.myVote;
+          voteBtn.textContent = `👍 Pick (${pick.votes})`;
+          voteBtn.setAttribute('aria-pressed', pick.myVote ? 'true' : 'false');
+        } catch (err) {
+          showNotice(err.message, 'error');
+        } finally {
+          voteBtn.disabled = false;
+        }
+      });
+      card.append(el('div', 'social-actions'));
+      card.lastChild.append(voteBtn);
+      list.append(card);
+    }
+    status.textContent = (data.picks || []).length ? '' : 'No shared links or recommendations yet.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+async function loadNowWall() {
+  const list = $('now-list');
+  const status = $('now-status');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  try {
+    const data = await api('now');
+    for (const m of data.entries || []) {
+      const card = el('article', 'entry social-person-card');
+      const head = el('div', 'entry-head social-head');
+      head.append(avatar(m));
+      const who = el('div', 'social-who');
+      const nr = el('div', 'social-name-row');
+      const link = el('a', 'social-name', authorName(m));
+      const href = safeHttpUrl(m.siteUrl);
+      if (href) {
+        link.href = href;
+        link.rel = 'noopener noreferrer';
+        link.target = '_blank';
+      }
+      nr.append(link);
+      const ab = authorBadgesEl(m);
+      if (ab) nr.append(ab);
+      who.append(nr, el('span', 'social-meta', relTime(m.now.updatedAt)));
+      head.append(who);
+      card.append(head, el('p', 'social-text', m.now.text));
+      list.append(card);
+    }
+    status.textContent = (data.entries || []).length ? '' : 'No recent Now updates yet.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+async function loadChallenges() {
+  const list = $('challenges-list');
+  const status = $('challenges-status');
+  list.replaceChildren();
+  status.textContent = 'Loading…';
+  try {
+    const data = await api('challenges');
+    const groups = [
+      ['Active challenges', data.active || []],
+      ['Upcoming challenges', data.upcoming || []],
+      ['Past challenges', data.past || []],
+    ];
+    let total = 0;
+    for (const [heading, items] of groups) {
+      if (!items.length) continue;
+      total += items.length;
+      list.append(el('h2', 'social-section-label', heading));
+      for (const ch of items) {
+        const card = el('article', 'entry social-card');
+        card.append(el('h3', 'social-title', ch.title));
+        if (ch.prompt) card.append(el('p', 'social-text', ch.prompt));
+        card.append(el('p', 'hint', `Tag: #${ch.tag} · ${ch.entryCount} ${ch.entryCount === 1 ? 'entry' : 'entries'} · Ends ${new Date(ch.endsAt).toLocaleDateString()}`));
+        const entriesBox = el('div', 'social-list');
+        entriesBox.hidden = true;
+        const btn = el('button', 'hub-btn', 'Show entries');
+        btn.type = 'button';
+        btn.addEventListener('click', async () => {
+          if (!entriesBox.hidden) {
+            entriesBox.hidden = true;
+            btn.textContent = 'Show entries';
+            return;
+          }
+          btn.disabled = true;
+          try {
+            const det = await api(`challenges/${ch.id}`);
+            entriesBox.replaceChildren();
+            for (const en of det.entries || []) entriesBox.append(itemCard(en));
+            if (!(det.entries || []).length) entriesBox.append(el('p', 'hint', 'No entries yet.'));
+            entriesBox.hidden = false;
+            btn.textContent = 'Hide entries';
+          } catch (err) {
+            showNotice(err.message, 'error');
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        const act = el('div', 'social-actions');
+        act.append(btn);
+        if (ch.pollId) {
+          const pl = el('a', 'hub-btn', '🗳️ View voting poll');
+          pl.href = '#polls';
+          act.append(pl);
+        }
+        card.append(act, entriesBox);
+        list.append(card);
+      }
+    }
+    status.textContent = total ? '' : 'No challenges yet.';
+  } catch (err) {
+    status.textContent = err.code === 'auth_required' ? 'This community is visible to signed-in members only.' : err.message;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Routing & wiring
 // ---------------------------------------------------------------------------
 
@@ -929,6 +1728,18 @@ function route() {
     const params = new URLSearchParams(hash.slice('#thread?'.length));
     setView('thread');
     loadThread(params.get('did') || '', params.get('id') || '');
+  } else if (hash === '#people') {
+    setView('people');
+    loadPeople();
+  } else if (hash === '#library') {
+    setView('library');
+    loadLibrary();
+  } else if (hash === '#now') {
+    setView('now');
+    loadNowWall();
+  } else if (hash === '#challenges') {
+    setView('challenges');
+    loadChallenges();
   } else if (hash === '#activity') {
     setView('activity');
     loadActivity(true);
@@ -947,6 +1758,9 @@ function route() {
   } else {
     state.lastFeedHash = '#feed';
     setView('feed');
+    loadActiveChallengeBanner();
+    loadFeedBelonging();
+    loadChannelPicker();
     loadFeed(true);
   }
 }
@@ -956,6 +1770,52 @@ $('thread-back').addEventListener('click', () => {
   else location.hash = state.lastFeedHash;
 });
 $('feed-more').addEventListener('click', () => loadFeed(false));
+if ($('feed-daily-bar')) {
+  $('feed-daily-bar').addEventListener('submit', (e) => {
+    e.preventDefault();
+    state.feedQuery = ($('feed-search')?.value || '').trim();
+    loadFeed(true);
+  });
+  $('feed-date').addEventListener('change', () => {
+    state.feedDate = $('feed-date').value || localDateStr();
+    loadFeed(true);
+  });
+  $('feed-day-prev').addEventListener('click', () => {
+    state.feedDate = shiftLocalDate(state.feedDate || localDateStr(), -1);
+    loadFeed(true);
+  });
+  $('feed-day-next').addEventListener('click', () => {
+    state.feedDate = shiftLocalDate(state.feedDate || localDateStr(), 1);
+    loadFeed(true);
+  });
+  $('feed-day-today').addEventListener('click', () => {
+    state.feedDate = localDateStr();
+    loadFeed(true);
+  });
+  $('feed-time-from').addEventListener('change', () => {
+    state.feedTimeFrom = $('feed-time-from').value || '';
+    loadFeed(true);
+  });
+  $('feed-time-to').addEventListener('change', () => {
+    state.feedTimeTo = $('feed-time-to').value || '';
+    loadFeed(true);
+  });
+  let searchTimer = null;
+  $('feed-search').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      state.feedQuery = ($('feed-search').value || '').trim();
+      loadFeed(true);
+    }, 220);
+  });
+  $('feed-filter-reset').addEventListener('click', () => {
+    state.feedDate = localDateStr();
+    state.feedTimeFrom = '';
+    state.feedTimeTo = '';
+    state.feedQuery = '';
+    loadFeed(true);
+  });
+}
 $('activity-more').addEventListener('click', () => loadActivity(false));
 for (const btn of document.querySelectorAll('.social-filter [data-type]')) {
   btn.addEventListener('click', () => {
@@ -991,6 +1851,11 @@ async function init() {
     state.config = { ...state.config, ...cfg };
   } catch {
     // Defaults are fine.
+  }
+  const libPostBtn = $('library-post-btn');
+  if (libPostBtn) {
+    const hubName = state.config.hubTitle || window.location.host || 'Webring Hub';
+    libPostBtn.href = `webring://interact?action=recommendation&location=${encodeURIComponent('Community Library')}&hub=${encodeURIComponent(hubName)}`;
   }
   buildReasons();
   route();

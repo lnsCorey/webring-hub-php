@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Working Groups — Webring Hub</title>
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="./style.css?v=4" />
+    <script src="/theme.js"></script>
+  </head>
+  <body class="groups-page">
+    <header class="site-header has-banner">
+      <div class="wrap">
+        <div class="hero-card">
+          <div class="hero-body">
+            <div class="header-bar">
+              <a class="brand" href="/">
+                <img class="brand-logo" src="/logo-mark.png" width="44" height="44" alt="" />
+                <span class="brand-text">
+                  <span class="brand-title"><span class="brand-webring">Hub</span> <span class="brand-accent">Working Groups</span></span>
+                  <span class="brand-subtitle">← Back to the hub</span>
+                </span>
+              </a>
+              <div class="header-badges">
+                <button class="hub-btn theme-toggle-btn" type="button" data-theme-toggle aria-label="Switch color theme">◐ System</button>
+                <div class="hub-auth-bar">
+                  <button id="hub-signin-btn" class="hub-btn" type="button">Sign in with Studio</button>
+                  <div id="hub-user-bar" class="hub-user-bar" hidden>
+                    <span id="hub-user-name" class="status-pill status-pill-indigo"></span>
+                    <button id="hub-mydata-btn" class="hub-btn" type="button">My Data</button>
+                    <button id="hub-signout-btn" class="hub-btn" type="button">Sign out</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="tagline">Sub-groups with scoped <code>#wg-&lt;slug&gt;</code> feeds, events, and member-only polls.</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap groups-main">
+      <div id="groups-notice" class="groups-notice" hidden></div>
+      <section id="view-list">
+        <div id="groups-list" class="groups-grid"></div>
+        <p id="groups-status" class="hint"></p>
+      </section>
+      <section id="view-detail" hidden>
+        <button id="group-back" class="hub-btn" type="button">← All groups</button>
+        <div id="group-detail"></div>
+      </section>
+    </main>
+
+    <dialog id="auth-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="auth-dialog-title">
+      <h2 id="auth-dialog-title">Sign in with Webring Studio</h2>
+      <p id="auth-status" class="form-message" role="status" aria-live="polite"></p>
+      <div class="hub-dialog-actions">
+        <a id="auth-launch-link" class="button" href="#" hidden>Open Webring Studio</a>
+        <button id="auth-cancel-btn" class="hub-btn" type="button">Cancel</button>
+      </div>
+      <details class="hub-cli-fallback">
+        <summary>CLI / another device fallback</summary>
+        <pre id="auth-cli-cmd" class="hub-cli-cmd"></pre>
+      </details>
+    </dialog>
+
+    <dialog id="mydata-dialog" class="admin-dialog hub-auth-dialog" aria-labelledby="mydata-dialog-title">
+      <h2 id="mydata-dialog-title">My Data &amp; Extension Privacy</h2>
+      <p class="hint">Signed in as <code id="mydata-did"></code>.</p>
+      <div id="mydata-list" class="mydata-list"></div>
+      <p id="mydata-status" class="form-message" role="status" aria-live="polite"></p>
+      <div class="hub-dialog-actions">
+        <button id="mydata-close-btn" class="hub-btn" type="button">Close</button>
+      </div>
+    </dialog>
+
+    <script type="module" src="/hub-auth.js"></script>
+    <script type="module" src="./app.js?v=6"></script>
+  </body>
+</html>

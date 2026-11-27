@@ -116,6 +116,8 @@ final class Database
                   display_name TEXT NOT NULL,
                   tagline TEXT NOT NULL DEFAULT '',
                   bio TEXT NOT NULL DEFAULT '',
+                  now_text TEXT NOT NULL DEFAULT '',
+                  now_updated_at TEXT DEFAULT NULL,
                   location TEXT NOT NULL DEFAULT '',
                   avatar_url TEXT NOT NULL DEFAULT '',
                   banner_url TEXT NOT NULL DEFAULT '',
@@ -176,6 +178,8 @@ final class Database
               display_name VARCHAR(200) NOT NULL,
               tagline VARCHAR(400) NOT NULL DEFAULT '',
               bio TEXT NOT NULL,
+              now_text VARCHAR(140) NOT NULL DEFAULT '',
+              now_updated_at VARCHAR(40) DEFAULT NULL,
               location VARCHAR(200) NOT NULL DEFAULT '',
               avatar_url TEXT NOT NULL,
               banner_url TEXT NOT NULL,
@@ -390,6 +394,20 @@ final class Database
                     : 'ALTER TABLE entries ADD KEY idx_entries_domain (registrable_domain)');
             }
             self::backfillRegistrableDomains($pdo);
+        };
+
+        // Short "Now" status from profile.json (`now: { text, updatedAt }`).
+        $steps['2026_11_entry_now'] = static function (PDO $pdo) use ($isSqlite): void {
+            if (!self::columnExists($pdo, 'entries', 'now_text')) {
+                $pdo->exec($isSqlite
+                    ? "ALTER TABLE entries ADD COLUMN now_text TEXT NOT NULL DEFAULT ''"
+                    : "ALTER TABLE entries ADD COLUMN now_text VARCHAR(140) NOT NULL DEFAULT '' AFTER bio");
+            }
+            if (!self::columnExists($pdo, 'entries', 'now_updated_at')) {
+                $pdo->exec($isSqlite
+                    ? "ALTER TABLE entries ADD COLUMN now_updated_at TEXT DEFAULT NULL"
+                    : "ALTER TABLE entries ADD COLUMN now_updated_at VARCHAR(40) DEFAULT NULL AFTER now_text");
+            }
         };
 
         if (!$isSqlite) {
@@ -775,6 +793,10 @@ final class Database
             'displayName' => $displayName,
             'tagline' => self::cleanSingleLine($profile['tagline'] ?? '', 400),
             'bio' => self::cleanMultiline($profile['bio'] ?? '', 8000),
+            'nowText' => is_array($profile['now'] ?? null) ? self::cleanSingleLine($profile['now']['text'] ?? '', 140) : '',
+            'nowUpdatedAt' => is_array($profile['now'] ?? null) && self::cleanSingleLine($profile['now']['text'] ?? '', 140) !== ''
+                ? (self::cleanSingleLine($profile['now']['updatedAt'] ?? '', 40) ?: (self::cleanSingleLine($profile['updatedAt'] ?? '', 40) ?: self::isoNow()))
+                : null,
             'location' => self::cleanSingleLine($profile['location'] ?? '', 200),
             'avatarUrl' => self::cleanUrl($profile['avatarUrl'] ?? ''),
             'bannerUrl' => self::cleanUrl($profile['bannerUrl'] ?? ''),
@@ -874,7 +896,7 @@ final class Database
             if ($byDid) {
                 $upd = $pdo->prepare("
                     UPDATE entries SET
-                      site_url = ?, registrable_domain = ?, handle = ?, display_name = ?, tagline = ?, bio = ?, location = ?,
+                      site_url = ?, registrable_domain = ?, handle = ?, display_name = ?, tagline = ?, bio = ?, now_text = ?, now_updated_at = ?, location = ?,
                       avatar_url = ?, banner_url = ?, interests_json = ?, interests_text = ?, links_json = ?,
                       public_key_pem = ?, profile_updated_at = ?, verified_at = ?, last_checked_at = ?,
                       fail_count = 0, last_error = NULL,
@@ -889,6 +911,8 @@ final class Database
                     $fields['displayName'],
                     $fields['tagline'],
                     $fields['bio'],
+                    $fields['nowText'],
+                    $fields['nowUpdatedAt'],
                     $fields['location'],
                     $fields['avatarUrl'],
                     $fields['bannerUrl'],
@@ -908,10 +932,10 @@ final class Database
 
             $ins = $pdo->prepare("
                 INSERT INTO entries (
-                  id, site_url, did, registrable_domain, handle, display_name, tagline, bio, location, avatar_url, banner_url,
+                  id, site_url, did, registrable_domain, handle, display_name, tagline, bio, now_text, now_updated_at, location, avatar_url, banner_url,
                   interests_json, interests_text, links_json, public_key_pem, profile_updated_at,
                   verified_at, last_checked_at, fail_count, last_error, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'active', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 'active', ?, ?)
             ");
             $ins->execute([
                 $fields['id'],
@@ -922,6 +946,8 @@ final class Database
                 $fields['displayName'],
                 $fields['tagline'],
                 $fields['bio'],
+                $fields['nowText'],
+                $fields['nowUpdatedAt'],
                 $fields['location'],
                 $fields['avatarUrl'],
                 $fields['bannerUrl'],
@@ -1615,6 +1641,9 @@ final class Database
             'displayName' => (string) $row['display_name'],
             'tagline' => (string) $row['tagline'],
             'bio' => (string) $row['bio'],
+            'now' => trim((string) ($row['now_text'] ?? '')) !== ''
+                ? ['text' => (string) $row['now_text'], 'updatedAt' => (string) ($row['now_updated_at'] ?? $row['updated_at'] ?? '')]
+                : null,
             'location' => (string) $row['location'],
             'avatarUrl' => (string) $row['avatar_url'],
             'bannerUrl' => (string) $row['banner_url'],

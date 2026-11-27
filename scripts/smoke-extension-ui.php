@@ -211,7 +211,7 @@ makeExt($extRoot, 'bad-source', 'BadSource', [
 ], "\$ctx->get('v1/public/stats', fn () => ['n' => 1]);");
 
 $tooManyPanels = [];
-for ($i = 1; $i <= 9; $i++) {
+for ($i = 1; $i <= 13; $i++) {
     $tooManyPanels[] = ['id' => "p{$i}", 'title' => "Panel {$i}", 'type' => 'stats', 'source' => 'v1/admin/s'];
 }
 makeExt($extRoot, 'bad-limit', 'BadLimit', [
@@ -302,9 +302,9 @@ check(
     'availableList() reports a bad manifest in problem'
 );
 
-echo "home page carousel template\n";
+echo "home page horizontal extension tabs\n";
 $emptyHome = Template::renderTemplateFile('index.html', Database::DEFAULT_INSTANCE_META, $pdo, []);
-check(!str_contains($emptyHome, 'ext-carousel'), 'plain hub renders no carousel markup');
+check(!str_contains($emptyHome, 'hub-ext-tabs'), 'plain hub renders no extension tabs');
 check(!str_contains($emptyHome, '/ext-carousel.js'), 'plain hub does not load ext-carousel.js');
 
 $xssHome = Template::renderTemplateFile('index.html', Database::DEFAULT_INSTANCE_META, $pdo, [
@@ -318,11 +318,11 @@ $xssHome = Template::renderTemplateFile('index.html', Database::DEFAULT_INSTANCE
         'accent' => 'magenta',
     ],
 ]);
-check(str_contains($xssHome, 'class="ext-carousel"'), 'home renders carousel when user-facing cards exist');
-check(str_contains($xssHome, '&lt;script&gt;alert(1)&lt;/script&gt;'), 'card title is HTML-escaped');
-check(!str_contains($xssHome, '<script>alert(1)</script>'), 'raw script tag never appears in card HTML');
+check(str_contains($xssHome, 'class="hub-ext-tabs"'), 'home renders horizontal extension tabs when user-facing cards exist');
+check(str_contains($xssHome, '&lt;script&gt;alert(1)&lt;/script&gt;'), 'tab title is HTML-escaped');
+check(!str_contains($xssHome, '<script>alert(1)</script>'), 'raw script tag never appears in tab HTML');
 check(str_contains($xssHome, 'ext-accent-magenta'), 'accent class is applied');
-check(str_contains($xssHome, '<script type="module" src="/ext-carousel.js"></script>'), 'ext-carousel.js is loaded when carousel is present');
+check(!str_contains($xssHome, '/ext-carousel.js'), 'carousel script is not loaded');
 
 // Cleanup
 $pdo = null;
